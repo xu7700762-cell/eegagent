@@ -1,0 +1,25 @@
+{
+  "probabilities": {
+    "deep_probability": 0.55,
+    "deep_temporal_probability": 0.57,
+    "biomarker_probability": 0.51,
+    "covariance_probability": null,
+    "full_probability": 0.56
+  },
+  "improved_probabilities": {
+    "path_mil_probability": 0.59,
+    "validated_numeric_probability": 0.58
+  },
+  "temporal": {
+    "raw_mean_probability": 0.55,
+    "raw_probability_std": 0.1,
+    "raw_recent_mean": 0.57,
+    "raw_recent_slope_per_second": 0.001,
+    "raw_last_probability": 0.58
+  },
+  "relative_band_power": [0.25, 0.2, 0.3, 0.25],
+  "reference_log_change": null,
+  "covariance_distance": null,
+  "reference_available": false,
+  "qc_accepted_fraction": 0.95
+}

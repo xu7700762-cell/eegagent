@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eegagent-core"
+version = "0.1.0"
+description = "Exploratory EEG path classification, constrained cloud judgement and adaptive evidence tools"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=2.0,<3",
+    "scipy>=1.10,<2",
+    "torch>=2.2",
+    "scikit-learn>=1.3,<2",
+    "joblib>=1.3",
+    "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+cloud = ["openai>=1.40,<3"]
+plot = ["matplotlib>=3.8", "Pillow>=10"]
+
+[tool.setuptools]
+py-modules = ["eegagent_config"]
+
+[tool.setuptools.packages.find]
+include = ["vrms_pilot*", "vrms_cloud*", "vrms_deepseek*", "vrms_refine*", "vrms_weights*"]
+
+[tool.setuptools.package-data]
+vrms_refine = ["analysis_plan.json"]

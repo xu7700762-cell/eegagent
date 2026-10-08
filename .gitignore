@@ -1,0 +1,45 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+auth.json
+config.local.*
+*.pem
+*.key
+.codex/
+
+# Research data, weights, responses and generated results
+data/
+datasets/
+raw/
+outputs/
+cache/
+checkpoints/
+PDFs/
+*.cdt
+*.dpo
+*.ceo
+*.npy
+*.npz
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.joblib
+*.pdf
+*.zip
+
+# Development files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+tmp/
+*.log
+.DS_Store
+Thumbs.db
