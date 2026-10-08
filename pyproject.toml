@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "eegagent-core"
-version = "0.1.0"
-description = "Exploratory EEG path classification, constrained cloud judgement and adaptive evidence tools"
+version = "0.2.0"
+description = "Uncertainty-aware EEG path classification, lazy evidence tools and explanation-only cloud analysis"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

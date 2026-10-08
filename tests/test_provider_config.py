@@ -37,7 +37,9 @@ class PortableProviders(unittest.TestCase):
         self.assertEqual(settings["wire_api"], "responses")
 
     def test_deepseek_wire_settings_budget_and_credential_free_log(self):
-        prediction = dict(id="qsingle", high_probability=.7, state="high", uncertain=True, reason="synthetic evidence")
+        prediction = dict(id="qsingle", supporting_evidence=["synthetic deep score"],
+                          conflicting_evidence=[], missing_evidence=["reference"],
+                          explanation="Synthetic evidence remains incomplete")
         raw = dict(model="deepseek-flash", choices=[dict(finish_reason="stop",
                    message=dict(content=json.dumps(dict(predictions=[prediction]))))])
         response = SimpleNamespace(usage=SimpleNamespace(prompt_tokens=20, completion_tokens=10),

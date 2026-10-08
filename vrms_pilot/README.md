@@ -1,15 +1,19 @@
-# Numerical pilot
+# Numerical pilot V2
 
-`data.py` implements stateful causal CDT preprocessing, QC, spectral/covariance features and label-separated caches. `model.py` defines a from-scratch compact CNN. `engine.py` implements temporal evidence, support/conflict and lazy adaptive exits. `experiment.py` performs frozen24-subject LOSO with14/5/4/1 internal/test roles.
+`data.py` audits real CEO/Trigger task boundaries before cache allocation, preserving excluded candidates. `model.py` trains the compact CNN from scratch. `reliability.py` fits independent Platt calibration and empirical policy gates. `engine.py` and `experiment.py` perform four-state decisions and lazy evidence acquisition.
+
+Every outer LOSO fold keeps14 base /5 meta /4 policy /1 test subjects. Meta is split into3 head-fit and2 probability-calibration subjects. OOD reference descriptors fit base signals only; uncertainty/OOD/QC-fraction cutoffs are selected only on independent policy subjects. Missing/failed validation abstains. Adaptive probability stays p_cal regardless of cases, auxiliary probabilities or LLM explanations.
 
 ```bash
+python -m vrms_pilot.experiment --stage audit --data-root /path/to/data
 python -m vrms_pilot.experiment --stage prepare --data-root /path/to/data
 python -m vrms_pilot.experiment --stage smoke
 python -m vrms_pilot.experiment --stage run
-python -m vrms_pilot.validate_results
-python -m vrms_pilot.export_window_oof
+python -m vrms_pilot.validate_results --data-root /path/to/data
 ```
 
-Set `EEG_DATA_ROOT` to the same data root for source validation. Default outputs: `outputs/vrms_pilot/20261007_seed2026`. Preparation overwrites caches; preserve completed runs. Smoke is one fold with two training epochs, not a completed experiment.
+Default output: `outputs/vrms_pilot/v2_seed2026`. Audit is read-only and writes eligibility records without EEG caches/training. Smoke is one fold/two epochs and remains separate from full results. Existing caches/results require a fresh directory. Historical147-path caches are rejected; current eligibility audit has146 complete paths/24 subjects.
 
-The historical contract expects147 candidates/24 subjects; one candidate has a clipped EOF endpoint. See [protocol](../docs/PROTOCOL.md) before new scientific results. Window labels are inherited path labels. Technical QC, conditional accuracy and desktop latency do not establish instantaneous/clinical/Pi validity.
+ToolReplay computes QC/deep/reliability first; difficult cases request CaseRetriever, then physiology if retrieval is unvalidated/unreliable/conflicting. Raw deep/temporal+QC retrieval avoids running expensive physiology before it is requested. Spectral changes/covariance distance are unsigned physiological descriptions; verification remains inconclusive without directional validation.
+
+Window labels are weak path labels. Conditional accuracy, engineering QC and desktop latency do not establish clinical/instantaneous symptoms or Pi validity. See [protocol](../docs/PROTOCOL.md).

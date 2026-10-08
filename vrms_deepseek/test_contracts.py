@@ -23,6 +23,11 @@ class DeepSeekContracts(unittest.TestCase):
                                  "state": "high", "uncertain": True, "reason": "weak evidence"}]}
         with self.assertRaises(ValueError):
             normalize_response(reply, {"choices": [{"finish_reason": "length"}]})
+        with self.assertRaises(ValueError):
+            normalize_response(reply, {"choices": [{"finish_reason": "stop"}]})
+        reply = {"predictions": [{"id": "qsingle", "supporting_evidence": [],
+                                 "conflicting_evidence": [], "missing_evidence": ["reference"],
+                                 "explanation": "Insufficient independently validated evidence"}]}
         self.assertEqual(normalize_response(reply, {"choices": [{"finish_reason": "stop"}]}), reply["predictions"][0])
 
     def test_api_failure_keeps_numerical_result_without_provider_fallback(self):
@@ -32,15 +37,29 @@ class DeepSeekContracts(unittest.TestCase):
         provider.call = fail
         with tempfile.TemporaryDirectory() as tmp, patch("vrms_deepseek.supervisor.time.sleep"):
             path = Path(tmp) / "call.json"
+            reliability = dict(p_raw=.62, p_cal=.61, calibration_status="fitted", policy_status="validated",
+                               signal_quality_bad=False, prediction_reliable=False, ood=False,
+                               evidence_conflict=False)
             pack = assess_evidence(provider, SimpleNamespace(response=None),
-                {"base_url": "https://api.deepseek.com"}, {"p": .62}, [], .62, path)
-            self.assertEqual(pack["high_probability"], .62)
+                {"base_url": "https://api.deepseek.com"}, {"p": .62}, [], .62, path,
+                reliability=reliability)
+            self.assertEqual(pack["high_probability"], .61)
+            self.assertEqual(pack["state"], "uncertain")
             self.assertTrue(pack["fallback_used"])
             self.assertEqual(pack["effective_llm_weight"], 0)
             log = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(len(log["attempts"]), 2)
             self.assertEqual(log["model"], "deepseek-flash")
             self.assertNotIn("Sensitive", path.read_text(encoding="utf-8"))
+
+    def test_quality_rejection_skips_provider(self):
+        provider = SimpleNamespace(model="deepseek-flash")
+        with patch("vrms_deepseek.supervisor.call_evidence") as call:
+            result = assess_evidence(provider, None, {}, {}, [], None, "unused",
+                reliability=dict(p_cal=None, signal_quality_bad=True))
+        call.assert_not_called()
+        self.assertEqual(result["state"], "insufficient_data")
+        self.assertFalse(result["cloud_called"])
 
 
 if __name__ == "__main__":

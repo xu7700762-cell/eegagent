@@ -9,6 +9,7 @@ import threading
 import time
 
 from vrms_cloud.cloud import SCHEMA, SYSTEM, check_blind, parse_predictions, write_json
+from vrms_cloud.supervisor import summarize_assessment, validate_inputs
 
 CONFIG_FILE = Path(os.environ.get("EEG_CONFIG_FILE", ".env"))
 OUTPUT_FORMAT = "\nReturn a JSON object satisfying this schema: " + json.dumps(SCHEMA, separators=(",", ":"))
@@ -38,7 +39,7 @@ def messages_for(evidence, examples):
         check_blind(example["evidence"])
         if example["observed_class"] not in ("high", "low"):
             raise ValueError("Invalid internal example class")
-    message = json.dumps(dict(task="Assess this one anonymous path independently",
+    message = json.dumps(dict(task="Explain this anonymous path's support, conflict and missing evidence",
                               examples=examples, queries=[dict(id="qsingle", evidence=evidence)]),
                          ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     return [dict(role="system", content=SYSTEM + OUTPUT_FORMAT), dict(role="user", content=message)]
@@ -63,6 +64,9 @@ def call_evidence(provider, captured, public, evidence, examples, destination):
         previous = json.loads(destination.read_text(encoding="utf-8"))
         if previous["request_sha256"] != sha or previous["base_url"] != public["base_url"]:
             raise ValueError("Cached DeepSeek request differs; use a new output directory")
+        if previous.get("success"):
+            normalize_response(dict(predictions=[previous["prediction"]]),
+                               dict(choices=[dict(finish_reason="stop")]))
         return previous
     log = dict(provider="project_deepseek", model=provider.model, base_url=public["base_url"],
                request=request, request_sha256=sha, success=False, attempts=[])
@@ -93,20 +97,12 @@ def call_evidence(provider, captured, public, evidence, examples, destination):
 
 
 def assess_evidence(provider, captured, public, evidence, examples, numeric_probability,
-                    log_path, llm_weight=.25):
-    if not 0 <= numeric_probability <= 1 or not 0 <= llm_weight <= 1:
-        raise ValueError("Probability and weight must be within [0,1]")
+                    log_path, llm_weight=None, *, reliability=None, decision=None):
+    context = validate_inputs(evidence, examples, numeric_probability, llm_weight, reliability, decision)
+    if context["state"] != "uncertain":
+        result = summarize_assessment(evidence, numeric_probability, reliability=reliability, decision=decision)
+        return {**result, "configured_model": provider.model, "response_model": None}
     response = call_evidence(provider, captured, public, evidence, examples, log_path)
-    cloud = response["prediction"] if response["success"] else None
-    p = numeric_probability if cloud is None else .75 * numeric_probability + .25 * cloud["high_probability"]
-    if llm_weight != .25 and cloud is not None:
-        p = (1 - llm_weight) * numeric_probability + llm_weight * cloud["high_probability"]
-    return dict(state="high" if p >= .5 else "low", high_probability=p,
-                numerical_probability=numeric_probability,
-                cloud_probability=None if cloud is None else cloud["high_probability"],
-                confidence_score=max(p, 1 - p), confidence_calibrated=False,
-                cloud_uncertain=True if cloud is None else cloud["uncertain"],
-                cloud_reason=None if cloud is None else cloud["reason"], cloud_success=response["success"],
-                configured_model=response["model"], response_model=response.get("response_model"),
-                effective_llm_weight=llm_weight if cloud else 0, fallback_used=cloud is None,
-                assessment_scope="whole_path_end", measured_cloud_seconds=response["seconds"])
+    result = summarize_assessment(evidence, numeric_probability, response,
+                                  reliability=reliability, decision=decision)
+    return {**result, "configured_model": response["model"], "response_model": response.get("response_model")}

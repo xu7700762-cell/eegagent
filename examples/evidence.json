@@ -1,14 +1,31 @@
 {
   "probabilities": {
-    "deep_probability": 0.55,
-    "deep_temporal_probability": 0.57,
-    "biomarker_probability": 0.51,
-    "covariance_probability": null,
-    "full_probability": 0.56
+    "deep_probability": 0.55
   },
-  "improved_probabilities": {
-    "path_mil_probability": 0.59,
-    "validated_numeric_probability": 0.58
+  "reliability": {
+    "p_raw": 0.55,
+    "p_cal": 0.58,
+    "calibration_status": "fitted",
+    "policy_status": "validated",
+    "signal_quality_bad": false,
+    "prediction_reliable": false,
+    "ood_score": 0.22,
+    "ood": false,
+    "evidence_conflict": false,
+    "signal_quality": {
+      "valid_window_fraction": 0.95,
+      "reference_quality": "missing",
+      "qc_passed": true
+    },
+    "thresholds": {
+      "margin": 0.15,
+      "ood_max": 0.6,
+      "min_valid_fraction": 0.8
+    },
+    "provenance": {
+      "synthetic_example": true,
+      "note": "All values and fitted/validated flags are fabricated for the offline contract demonstration"
+    }
   },
   "temporal": {
     "raw_mean_probability": 0.55,
@@ -17,9 +34,6 @@
     "raw_recent_slope_per_second": 0.001,
     "raw_last_probability": 0.58
   },
-  "relative_band_power": [0.25, 0.2, 0.3, 0.25],
-  "reference_log_change": null,
-  "covariance_distance": null,
   "reference_available": false,
   "qc_accepted_fraction": 0.95
 }

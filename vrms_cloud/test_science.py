@@ -1,9 +1,10 @@
-"""Guard train-only normalization and validation-only blend selection."""
+"""Guard training-only reference statistics and calibrated deep-only decisions."""
 import unittest
 import numpy as np
 
-from vrms_cloud.evaluate import choose_blend, metric
+from vrms_cloud.evaluate import metric
 from vrms_cloud.improve import tangent_features
+from vrms_cloud.supervisor import summarize_assessment
 
 
 class ScientificContracts(unittest.TestCase):
@@ -17,20 +18,24 @@ class ScientificContracts(unittest.TestCase):
         np.testing.assert_array_equal(reference, changed_reference)
         np.testing.assert_array_equal(features[:5], changed[:5])
 
-    def test_cloud_failure_preserves_combined_decisions_and_prefers_no_weight(self):
-        y = np.array([0, 1, 0, 1])
-        numeric = np.array([.2, .8, .3, .7])
-        selected = choose_blend(y, numeric, {"cloud": np.full(4, np.nan)})
-        self.assertEqual(selected["weight"], 0)
-        self.assertEqual(selected["mode"], "none")
+    def test_explanation_and_api_failure_preserve_the_same_deep_probability(self):
+        gate = dict(p_cal=.49, calibration_status="fitted", policy_status="validated",
+                    signal_quality_bad=False, prediction_reliable=False, ood=False,
+                    evidence_conflict=True)
+        for response in (dict(success=False, seconds=1.), dict(success=True, seconds=1., prediction=dict(
+                supporting_evidence=["deep score near threshold"], conflicting_evidence=["mixed cases"],
+                missing_evidence=[], explanation="The deep score remains unresolved"))):
+            result = summarize_assessment({"reliability": gate}, .55, response)
+            self.assertEqual(result["high_probability"], .49)
+            self.assertEqual(result["state"], "uncertain")
+            self.assertEqual(result["effective_llm_weight"], 0)
 
-    def test_cloud_weight_requires_actual_validation_improvement(self):
-        y = np.array([0, 1, 0, 1])
-        numeric = np.array([.7, .7, .3, .3])
-        cloud = np.array([.1, .9, .1, .9])
-        selected = choose_blend(y, numeric, {"cloud": cloud})
-        self.assertGreater(selected["weight"], 0)
-        self.assertEqual(selected["bacc"], 1)
+    def test_policy_must_be_validated_before_a_calibrated_class_can_be_released(self):
+        gate = dict(p_cal=.99, calibration_status="fitted", policy_status="unvalidated",
+                    signal_quality_bad=False, prediction_reliable=True, ood=False,
+                    evidence_conflict=False)
+        result = summarize_assessment({"reliability": gate}, .9)
+        self.assertEqual(result["state"], "uncertain")
 
     def test_failure_and_single_class_are_reported_without_inventing_bacc(self):
         summary = metric(np.array([0, 1, 0]), np.array([.1, np.nan, .2]))

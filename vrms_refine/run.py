@@ -1,4 +1,4 @@
-"""Run real baseline-policy and enhanced single-path cloud requests."""
+"""Run V2 single-path explanation comparisons; never return LLM probabilities."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -8,7 +8,7 @@ import time
 
 from vrms_cloud.cloud import call_job, existing_provider
 from vrms_deepseek.supervisor import CONFIG_FILE, call_evidence, make_provider
-from .common import DEFAULT_OUT, api_job, read_json, request_path, sha, write_json
+from .common import DEFAULT_OUT, api_job, check_v2_artifacts, read_json, request_path, sha, write_json
 
 
 def main():
@@ -20,13 +20,17 @@ def main():
     parser.add_argument("--recover-http402", action="store_true")
     args = parser.parse_args()
     jobs = read_json(args.out / "jobs.json")
-    protocol = read_json(args.out / "protocol.json")
+    protocol = check_v2_artifacts(args.out, require_validation=True)
+    if protocol.get("schema_version") != "uncertainty_agent_v2":
+        raise ValueError("V2 runner cannot reuse historical fusion requests")
+    if read_json(args.out / "structural_validation.json")["status"] != "passed":
+        raise ValueError("Validate frozen V2 retrieval requests before API calls")
     if not args.limit and not (args.out / "analysis_plan.json").exists():
         raise ValueError("Freeze the analysis plan before the full API run")
     random.Random(2026).shuffle(jobs)
     if args.limit:
         # Probe both contexts, using the same deterministic jobs in the full run.
-        first = [next(j for j in jobs if j["mode"] == mode) for mode in ("baseline", "enhanced")]
+        first = [next(j for j in jobs if j["mode"] == mode) for mode in ("case_rag", "balanced_few_shot_control")]
         jobs = (first + [j for j in jobs if j not in first])[:args.limit]
     out = args.out / args.vendor
     out.mkdir(exist_ok=True)
@@ -76,8 +80,7 @@ def main():
                 write_json(path, log)
                 blocked.set()
         return dict(mode=job["mode"], outer_subject=job["outer_subject"], path_index=job["path_index"], role=job["role"],
-                    success=log["success"], probability=None if prediction is None else prediction["high_probability"],
-                    uncertain=True if prediction is None else prediction["uncertain"], seconds=log["seconds"],
+                    success=log["success"], explanation=prediction, seconds=log["seconds"],
                     log_sha256=sha(path), selected_log_path=str(path))
 
     def save_status(status):

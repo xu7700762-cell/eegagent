@@ -1,143 +1,119 @@
-"""Verify actual requests, frozen sources and all improved outer checkpoints."""
+"""Validate V2 frozen artifacts and recompute four-state selective metrics."""
+import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 
-import joblib
-import numpy as np
-import torch
-
-from vrms_pilot.data import digest, read_csv, write_json
-from vrms_pilot.experiment import DEFAULT_DATA, DEFAULT_OUT as PILOT_OUT, probabilities
-from .cloud import SYSTEM, build_job, check_blind, choose_examples, parse_predictions
-from .improve import PathMILCNN, path_features, tangent_features, mil_scores
+from vrms_pilot.data import digest, write_json
+from .cloud import SYSTEM, check_blind, parse_predictions
+from .evaluate import evaluate_v2
+from .independent import load_prepared, prepare_assessment
 from .prepare import DEFAULT_OUT
-from .evaluate import metric
+
+
+def same_evidence(a, b):
+    """Allow inference roundoff across devices, but keep roles/fields exact."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(same_evidence(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(same_evidence(x, y) for x, y in zip(a, b))
+    if isinstance(a, float) and isinstance(b, (int, float)) and not isinstance(b, bool):
+        return math.isclose(a, b, rel_tol=2e-5, abs_tol=2e-5)
+    return type(a) is type(b) and a == b
+
+
+def validate_v2(out=DEFAULT_OUT, offline=False):
+    out = Path(out)
+    data, folds, protocol = load_prepared(out)
+    for filename, expected in protocol["code_sha256"].items():
+        if digest(Path(__file__).parent / filename) != expected:
+            raise ValueError(f"Frozen cloud source changed: {filename}")
+    status = json.loads((out / ("offline_status.json" if offline else "independent_status.json")).read_text(encoding="utf-8"))
+    folder = out / ("offline_calls" if offline else "independent_calls")
+    calls = 0
+    bundles = {}
+    records = {r["path_index"]: (fold, r) for fold in folds for r in fold["records"] if r["role"] == "outer_test"}
+    for row in status["results"]:
+        i = row["path_index"]
+        pack = json.loads((folder / f"path_{i:03d}_evidence_pack.json").read_text(encoding="utf-8"))
+        fold, record = records[i]
+        subject = fold["outer_subject"]
+        if subject not in bundles:
+            bundles.clear()
+            bundles[subject] = data.load_bundle(fold["split"])
+        inputs, replay_pack = prepare_assessment(data, record, bundles[subject])
+        if (not same_evidence(pack["p_cal"], inputs["reliability"]["p_cal"]) or pack["state"] != inputs["decision"]["state"]
+                or pack["tool_calls"] != replay_pack["tool_calls"]):
+            raise ValueError("Saved result differs from frozen lazy model replay")
+        expected_call = not offline and inputs["decision"]["state"] == "uncertain"
+        if pack.get("cloud_called") is not expected_call:
+            raise ValueError("Cloud call flag differs from the deterministic policy")
+        if pack["high_probability"] != pack["p_cal"] or pack["effective_llm_weight"] != 0:
+            raise ValueError("Cloud changed model probability")
+        if pack["state"] in ("high", "low"):
+            reliability = pack["reliability"]
+            if not (reliability["prediction_reliable"] and reliability["policy_status"] == "validated"
+                    and reliability["ood"] is False and reliability["evidence_conflict"] is False):
+                raise ValueError("Published class bypassed reliability gate")
+        if pack["decision_reason"] == "validated_deep_prediction":
+            if set(pack["tool_calls"]) & {"CaseRetriever", "BiomarkerCalculator", "CovarianceAnalyzer"}:
+                raise ValueError("Easy path acquired optional tools")
+        if pack.get("cloud_called"):
+            log = json.loads((folder / f"path_{i:03d}_cloud_call.json").read_text(encoding="utf-8"))
+            if pack["cloud_success"] != log["success"] or pack["fallback_used"] != (not log["success"]):
+                raise ValueError("Saved cloud success/fallback differs from API record")
+            is_deepseek = log.get("provider") == "project_deepseek"
+            message = log["request"]["messages"][1]["content"] if is_deepseek else log["user_message"]
+            expected_hash = (hashlib.sha256(json.dumps(log["request"], ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+                             if is_deepseek else hashlib.sha256((SYSTEM + message).encode()).hexdigest())
+            if log["request_sha256"] != expected_hash:
+                raise ValueError("Request hash changed")
+            request = json.loads(message)
+            if len(request["queries"]) != 1:
+                raise ValueError("Independent requests require exactly one anonymous query")
+            check_blind(request["queries"])
+            for example in request["examples"]:
+                check_blind(example["evidence"])
+            if not same_evidence(request["examples"], inputs["examples"]) or not same_evidence(request["queries"][0]["evidence"], inputs["evidence"]):
+                raise ValueError("Cloud request differs from frozen lazy tool evidence")
+            if log["success"]:
+                if is_deepseek:
+                    from vrms_deepseek.supervisor import normalize_response
+                    raw = log["attempts"][-1]["response"]
+                    parsed = normalize_response(json.loads(raw["choices"][0]["message"]["content"]), raw)
+                    stored = log["prediction"]
+                else:
+                    parsed = parse_predictions(log["attempts"][-1]["response"], log["mapping"])
+                    stored = log["predictions"]
+                if parsed != stored:
+                    raise ValueError("Cached explanation changed")
+                analysis = stored if is_deepseek else stored[0]
+                if any(pack[name] != analysis[name] for name in
+                       ("supporting_evidence", "conflicting_evidence", "missing_evidence", "explanation")):
+                    raise ValueError("Saved explanation differs from API record")
+            elif (pack["supporting_evidence"] or pack["conflicting_evidence"] or pack["missing_evidence"]
+                  or pack["explanation"] is not None):
+                raise ValueError("Failed API call cannot invent a cloud explanation")
+            calls += 1
+        elif (pack["cloud_success"] or pack["fallback_used"] or pack["supporting_evidence"]
+              or pack["conflicting_evidence"] or pack["missing_evidence"] or pack["explanation"] is not None):
+            raise ValueError("Skipped API call cannot contain a cloud explanation")
+    score = evaluate_v2(out, offline)
+    validation = dict(schema_version="uncertainty_agent_v2", status="passed", paths=len(data.paths),
+                      model_probability_unchanged=True, dynamic_tools_verified=True,
+                      independent_requests_checked=calls, frozen_hashes_checked=True,
+                      metrics_recomputed=True, offline=offline, partial_run=score["partial_run"])
+    write_json(out / ("offline_validation.json" if offline else "validation.json"), validation)
+    return validation
 
 
 def main():
-    out = DEFAULT_OUT
-    cache = PILOT_OUT / "cache"
-    protocol = json.loads((out / "protocol.json").read_text(encoding="utf-8"))
-    for name, sha in protocol["source_artifact_sha256"].items():
-        assert digest(PILOT_OUT / "results" / name) == sha
-    assert digest(PILOT_OUT / "split_manifest.json") == protocol["split_manifest_sha256"]
-    old_protocol = json.loads((PILOT_OUT / "results/protocol.json").read_text(encoding="utf-8"))
-    for name, sha in old_protocol["code_sha256"].items():
-        assert digest(Path("vrms_pilot") / name) == sha, "Frozen pilot source was changed"
-    improved_protocol = json.loads((out / "improvements/protocol.json").read_text(encoding="utf-8"))
-    assert digest(Path("vrms_cloud/improve.py")) == improved_protocol["source_sha256"]
-    evaluation = {r["path_index"]: r for r in json.loads((out / "evaluation.json").read_text(encoding="utf-8"))}
-    folds = json.loads((out / "fold_evidence.json").read_text(encoding="utf-8"))
-    summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
-    clouds = []
-    for mode in summary["cloud"]["modes"]:
-        for fold in folds:
-            job = build_job(fold, evaluation, mode)
-            log = json.loads((out / "cloud_calls" / f"{mode}_fold_{fold['outer_subject']:02d}.json").read_text(encoding="utf-8"))
-            assert job["request_sha256"] == log["request_sha256"]
-            assert job["user_message"] == log["body"]["input"][1]["content"]
-            message = json.loads(job["user_message"])
-            for query in message["queries"]:
-                check_blind(query)
-            for example in message["examples"]:
-                check_blind(example["evidence"])
-            assert set(job["example_indices"]).isdisjoint(r["path_index"] for r in job["mapping"].values())
-            if log["success"]:
-                assert parse_predictions(log["attempts"][-1]["response"], job["mapping"]) == log["predictions"]
-            clouds.append(log)
-    paths = json.loads((cache / "evaluation_manifest.json").read_text(encoding="utf-8"))
-    audit = json.loads((cache / "dataset_audit.json").read_text(encoding="utf-8"))
-    assert digest(DEFAULT_DATA / "labels/task_segments_with_path_scores.csv") == audit["label_sha256"]
-    assert digest(DEFAULT_DATA / "labels/state_segments_by_mark.csv") == audit["state_sha256"]
-    for source in audit["sources"]:
-        raw = Path(source["path"])
-        assert raw.stat().st_size == source["size_bytes"]
-        assert raw.stat().st_mtime_ns == source["mtime_ns"]
-        assert digest(str(raw) + ".dpo") == source["dpo_sha256"]
-    windows = np.load(cache / "windows.npy", mmap_mode="r")[:audit["accepted_windows"]]
-    window_rows = [json.loads(s) for s in (cache / "window_evidence.jsonl").read_text(encoding="utf-8").splitlines()]
-    starts = np.asarray([r["start_sample"] / 1024 for r in window_rows])
-    features, cov = path_features(cache, paths, windows, audit["channel_order"])
-    predictions = read_csv(out / "improvements/predictions.csv")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    torch.set_num_threads(2)
-    errors = []
-    for fold in folds:
-        split = fold["split"]
-        s = split["outer_subject"]
-        groups = [set(split[k]) for k in ("base_train", "meta_calibration", "policy_validation", "outer_test")]
-        assert all(not a & b for i, a in enumerate(groups) for b in groups[i + 1:])
-        base = [i for i, p in enumerate(paths) if p["subject_key"] in split["base_train"]]
-        test = [i for i, p in enumerate(paths) if p["subject_key"] == s]
-        filename = out / "improvements/checkpoints" / f"outer_subject_{s:02d}"
-        bundle = joblib.load(str(filename) + ".joblib")
-        state = torch.load(str(filename) + ".pt", map_location=device, weights_only=False)
-        assert bundle["split"] == state["split"] == split
-        model = PathMILCNN().to(device)
-        model.load_state_dict(state["model"])
-        dt = mil_scores(model, windows, paths, starts, test, device)
-        scores = {"path_mil": probabilities(bundle["calibrators"]["path_mil"], dt)}
-        for name in ("regional_spectrum", "spatial_spectrum", "tangent_covariance"):
-            if name == "tangent_covariance":
-                x, reference = tangent_features(cov, base)
-                np.testing.assert_array_equal(reference, bundle["models"][name]["reference"])
-            else:
-                x = features[name]
-            raw = probabilities(bundle["models"][name]["model"], x)
-            z = np.log(np.clip(raw, 1e-6, 1 - 1e-6) / np.clip(1 - raw, 1e-6, 1))[:, None]
-            scores[name] = probabilities(bundle["calibrators"][name], z)
-        rows = {int(r["path_index"]): r for r in predictions if int(r["outer_subject"]) == s and r["role"] == "outer_test"}
-        for i in test:
-            for name, p in scores.items():
-                errors.append(abs(p[i] - float(rows[i][name])))
-    assert max(errors) < 2e-5
-    oof = read_csv(out / "path_oof.csv")
-    assert len(oof) == len({int(r["path_index"]) for r in oof}) == 147
-    yy = np.asarray([int(r["label"]) for r in oof])
-    for name, expected in summary["methods"].items():
-        pp = np.asarray([float(r[name]) if r[name] else np.nan for r in oof])
-        assert metric(yy, pp) == expected, f"Metric mismatch: {name}"
-    independent_checked = 0
-    if "single_path_cloud" in summary:
-        for fold in folds:
-            examples = [dict(evidence=r["evidence"], observed_class="high" if evaluation[r["path_index"]]["label"] else "low")
-                        for r in choose_examples(fold["records"], evaluation, 2026 + fold["outer_subject"])]
-            for record in fold["records"]:
-                if record["role"] != "outer_test":
-                    continue
-                i = record["path_index"]
-                log = json.loads((out / "independent_calls" / f"path_{i:03d}_cloud_call.json").read_text(encoding="utf-8"))
-                body = log["body"]
-                message = body["input"][1]["content"]
-                prompt = json.loads(message)
-                assert prompt["examples"] == examples
-                assert prompt["queries"] == [dict(id="qsingle", evidence=record["evidence"])]
-                assert "previous_response_id" not in body
-                check_blind(prompt["queries"])
-                assert log["request_sha256"] == hashlib.sha256((SYSTEM + message).encode()).hexdigest()
-                pack = json.loads((out / "independent_calls" / f"path_{i:03d}_evidence_pack.json").read_text(encoding="utf-8"))
-                row = next(r for r in predictions if int(r["path_index"]) == i and r["role"] == "outer_test")
-                numeric = float(row["validated_numeric"])
-                if log["success"]:
-                    response = parse_predictions(log["attempts"][-1]["response"], ["qsingle"])[0]
-                    assert pack["high_probability"] == .75 * numeric + .25 * response["high_probability"]
-                else:
-                    assert pack["high_probability"] == numeric and pack["fallback_used"]
-                assert not pack["confidence_calibrated"]
-                independent_checked += 1
-        assert independent_checked == 147
-    result = dict(status="passed", original_source_and_results_unchanged=True,
-                  raw_stat_header_and_label_hashes_unchanged=True,
-                  outer_labels_absent_from_requests=True, example_subjects_internal_only=True,
-                  cloud_request_hashes_checked=len(clouds), cloud_responses_checked=sum(c["success"] for c in clouds),
-                  independent_single_path_requests_checked=independent_checked,
-                  complete_outer_paths=147, subjects=24, improvement_checkpoint_comparisons=len(errors),
-                  max_reload_probability_error=float(max(errors)), metrics_recomputed=True,
-                  llm_participates_in_classification=True, clinical_or_instantaneous_validation=False,
-                  implementation_sha256={p.name: digest(p) for p in Path("vrms_cloud").glob("*.py")})
-    write_json(out / "validation.json", result)
-    print(json.dumps(result, indent=2), flush=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--offline", action="store_true")
+    args = parser.parse_args()
+    print(json.dumps(validate_v2(args.out, args.offline), indent=2), flush=True)
 
 
 if __name__ == "__main__":

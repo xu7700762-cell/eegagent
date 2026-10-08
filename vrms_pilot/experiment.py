@@ -19,14 +19,15 @@ from sklearn.metrics import (balanced_accuracy_score, brier_score_loss,
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from .data import (covariance_features, digest, prepare, qc, reference_invroot,
+from .data import (audit_eligibility, covariance_features, digest, prepare, qc, reference_invroot,
                    spectral_features, write_json)
-from .engine import adaptive_policy, choose_margin, temporal_features
+from .engine import adaptive_policy, temporal_features
 from .model import CompactEEGCNN, predict_windows, train_cnn
+from .reliability import ReliabilityModel, fit_reliability, signal_descriptor
 
 SEED = 2026
 DEFAULT_DATA = Path(os.environ.get("EEG_DATA_ROOT", "data"))
-DEFAULT_OUT = Path("outputs/vrms_pilot/20261007_seed2026")
+DEFAULT_OUT = Path("outputs/vrms_pilot/v2_seed2026")
 
 
 def make_splits(paths):
@@ -41,6 +42,9 @@ def make_splits(paths):
             # Internal stratification only: the held-out subject's labels are never read.
             adequate = all(min(np.bincount([p["label"] for p in paths if p["subject_key"] in group], minlength=2)) >= 3
                            for group in parts.values())
+            head_fit, probability_calibration = order[14:17], order[17:19]
+            adequate = adequate and all(min(np.bincount([p['label'] for p in paths if p['subject_key'] in group], minlength=2)) >= 2
+                                        for group in (head_fit, probability_calibration))
             if adequate:
                 break
         else:
@@ -49,7 +53,8 @@ def make_splits(paths):
         groups = list(parts.values())
         if any(set(a) & set(b) for i, a in enumerate(groups) for b in groups[i + 1:]):
             raise AssertionError("Subject leakage")
-        result.append(dict(outer_subject=subject, selection_attempt=attempt, **parts))
+        result.append(dict(outer_subject=subject, selection_attempt=attempt,
+                           head_fit=head_fit, probability_calibration=probability_calibration, **parts))
     return result
 
 
@@ -111,7 +116,13 @@ class ToolReplay:
     """Single VRMSAgent execution context; tool results are actually computed lazily."""
     def __init__(self, path, x, starts, reference, reference_power, bundle, device):
         self.path, self.x, self.starts = path, x, starts
-        self.reference, self.reference_power = reference, reference_power
+        self.reference = np.full((30, 30), np.nan) if reference is None else np.asarray(reference)
+        self.reference_power = np.full((30, 4), np.nan) if reference_power is None else np.asarray(reference_power)
+        self.reference_available = (self.reference.shape == (30, 30) and np.isfinite(self.reference).all()
+                                    and np.allclose(self.reference, self.reference.T)
+                                    and np.linalg.eigvalsh(self.reference).min() > 0)
+        self.reference_power_available = (self.reference_power.shape == (30, 4)
+                                          and np.isfinite(self.reference_power).all() and (self.reference_power > 0).all())
         self.bundle, self.device = bundle, device
         self.memo, self.timings, self.calls = {}, {}, []
         self.dt = None
@@ -136,9 +147,78 @@ class ToolReplay:
         return float(estimator.predict_proba(np.asarray(features)[None])[:, 1][0])
 
     def quality(self):
-        return self.tool("SignalQualityChecker", lambda: all(qc(x)[0] for x in self.x))
+        def operation():
+            measurements = [qc(x) for x in self.x]
+            amplitudes = [m['max_ptp_uv'] for _, m in measurements if m['max_ptp_uv'] is not None]
+            self.memo['quality_summary'] = dict(checked_windows=len(measurements),
+                finite_windows=sum(m['finite'] for _, m in measurements),
+                max_ptp_uv=max(amplitudes, default=None),
+                minimum_nonflat_channels=min((m['nonflat_channels'] for _, m in measurements), default=0),
+                scope='engineering_sanity_checks_not_validated_artifact_detection')
+            return bool(measurements) and all(good for good, _ in measurements)
+        return self.tool("SignalQualityChecker", operation)
+
+    def reliability(self):
+        if 'UncertaintyEvaluator' in self.memo:
+            return self.memo['UncertaintyEvaluator']
+        fraction = len(self.x) / max(self.path['total_possible_windows'], 1)
+        model = self.bundle.get('reliability') or ReliabilityModel()
+        good = self.quality()
+        preliminary = model.assess(None, None, fraction, qc_passed=good,
+                                   reference_available=bool(self.reference_available))
+        raw = None if preliminary['signal_quality_bad'] else self.score('deep')
+        def operation():
+            if preliminary['signal_quality_bad']:
+                result = preliminary
+            else:
+                result = model.assess(raw, signal_descriptor(self.x), fraction, qc_passed=good,
+                                      reference_available=bool(self.reference_available))
+            result['signal_quality']['artifact_summary'] = self.memo['quality_summary']
+            return result
+        return self.tool('UncertaintyEvaluator', operation)
+
+    def evidence_snapshot(self):
+        """Label-blind deep/temporal/QC evidence; no eager RAG, Bio or Cov."""
+        gate = self.reliability()
+        if gate['signal_quality_bad']:
+            return dict(probabilities={}, temporal={}, reliability=gate,
+                        qc_accepted_fraction=len(self.x) / max(self.path['total_possible_windows'], 1),
+                        reference_available=bool(self.reference_available))
+        raw = self.score('deep')
+        temporal_score = self.score('deep_temporal')
+        dt = self.dt
+        temporal = dict(raw_mean_probability=float(np.mean(1 / (1 + np.exp(-np.clip(self.memo['window_logits'], -30, 30))))),
+                        raw_probability_std=float(dt[1]), raw_recent_mean=float(dt[3]),
+                        raw_recent_slope_per_second=float(dt[4]), raw_last_probability=float(dt[5]))
+        evidence = dict(probabilities=dict(deep_probability=raw, deep_temporal_probability=temporal_score,
+                                          calibrated_deep_probability=gate['p_cal']),
+                        temporal=temporal, reliability=gate,
+                        qc_accepted_fraction=len(self.x) / max(self.path['total_possible_windows'], 1),
+                        reference_available=bool(self.reference_available))
+        if 'physiological_evidence' in self.memo:
+            evidence['physiological_evidence'] = self.memo['physiological_evidence']
+        if 'CaseRetriever' in self.memo:
+            retrieval = self.memo['CaseRetriever']
+            evidence['case_retrieval'] = {key: value for key, value in retrieval.items() if key != 'selected_indices'}
+        return evidence
+
+    def _physiology(self):
+        from .physiology import physiological_evidence
+        self.memo['physiological_evidence'] = physiological_evidence(
+            biomarker=self.memo.get('biomarker_description'), covariance=self.memo.get('covariance_description'),
+            reference_quality='valid' if self.reference_power_available and self.reference_available else 'unavailable',
+            p_cal=self.reliability()['p_cal'])
 
     def score(self, name):
+        if name == 'case_retrieval':
+            def retrieve():
+                retriever = self.bundle.get('case_retriever')
+                if retriever is None:
+                    return dict(examples=[], retrieval_quality=dict(status='unvalidated', reliable=False,
+                                reason='case_bank_unavailable'), evidence_conflict=False)
+                return retriever(self.evidence_snapshot(), query_subject=self.path.get('subject_key'),
+                                 p_cal=self.reliability()['p_cal'])
+            return self.tool('CaseRetriever', retrieve)
         if name == "deep":
             z = self.tool("DeepVRMSDetector", lambda: predict_windows(self.bundle["cnn"], self.bundle["mean"],
                           self.bundle["scale"], self.x, self.device))
@@ -151,12 +231,16 @@ class ToolReplay:
         if name == "biomarker":
             def bio_operation():
                 absolute, relative = [], []
-                ref_valid = np.isfinite(self.reference_power).all()
+                ref_valid = self.reference_power_available and self.reference_available
                 for x in self.x:
                     f, power = spectral_features(x)
                     absolute.append(f)
                     if ref_valid:
                         relative.append(np.r_[f, np.log((power + 1e-10) / (self.reference_power + 1e-10)).ravel()])
+                self.memo['biomarker_description'] = dict(
+                    relative_band_power=np.mean(absolute, axis=0)[120:].reshape(30, 4).mean(axis=0).tolist(),
+                    reference_log_change=(np.mean(relative, axis=0)[240:].reshape(30, 4).mean(axis=0).tolist()
+                                          if relative else None))
                 classifier = self.bundle["classifiers"]["bio_reference"] if relative else None
                 features = np.mean(relative, axis=0) if classifier is not None else np.mean(absolute, axis=0)
                 if classifier is None:
@@ -165,17 +249,22 @@ class ToolReplay:
                     return None
                 return float(classifier.predict_proba(features[None])[:, 1][0])
             p = self.tool("BiomarkerCalculator", bio_operation)
+            self._physiology()
             self.bio_logit = None if p is None else float(logit(p))
             return self.head(name, None if p is None else [self.bio_logit])
         if name == "covariance":
             def cov_operation():
                 classifier = self.bundle["classifiers"]["covariance"]
-                if classifier is None or not np.isfinite(self.reference).all():
+                if not self.reference_available:
                     return None
                 invroot = reference_invroot(self.reference)
                 f = np.mean([covariance_features(x, self.reference, invroot) for x in self.x], axis=0)
+                self.memo['covariance_description'] = dict(distance=float(f[-1]))
+                if classifier is None:
+                    return None
                 return float(classifier.predict_proba(f[None])[:, 1][0])
             p = self.tool("CovarianceAnalyzer", cov_operation)
+            self._physiology()
             self.cov_logit = None if p is None else float(logit(p))
             return self.head(name, None if p is None else [self.cov_logit])
         self.score("deep_temporal")
@@ -193,30 +282,39 @@ class ToolReplay:
     def assess(self, method):
         begin = time.perf_counter()
         good = self.quality()
-        reference_ok = (np.isfinite(self.reference).all() and self.bundle["meta"].get("full") is not None
-                        and self.bundle["meta"].get("covariance") is not None)
+        reference_ok = bool(self.reference_available)
+        if method == 'adaptive':
+            reliability = self.reliability()
         if not good or not len(self.x):
             result = dict(probability=None, state="insufficient_data", stage="qc", stop_reason="invalid_input")
         elif method == "adaptive":
-            result = adaptive_policy(self.score, self.bundle["margins"], reference_ok)
+            result = adaptive_policy(self.score, self.bundle.get("margins"), reference_ok, reliability=reliability)
+            reliability['evidence_conflict'] = result.get('evidence_conflict', False)
         else:
             stage = "full" if method == "full" and reference_ok else "deep_temporal_bio" if method == "full" else method
             p = self.score(stage)
             result = dict(probability=p, state=("high" if p >= .5 else "low") if p is not None else "uncertain",
                           stage=stage, stop_reason="fixed_baseline_numeric_output")
         elapsed = (time.perf_counter() - begin) * 1000
-        return dict(schema_version="pilot_v1", evidence_id=f"{self.path['episode_handle']}-{method}",
+        pack = dict(schema_version="pilot_v2", evidence_id=f"{self.path['episode_handle']}-{method}",
                     episode_handle=self.path["episode_handle"], assessment_scope="path_end",
                     data_cutoff_sec=self.path["path_end_sec"], qc_passed=good,
                     valid_windows=len(self.x), possible_windows=self.path["total_possible_windows"],
-                    reference_available=bool(np.isfinite(self.reference).all()),
+                    reference_available=bool(self.reference_available),
                     versions=dict(preprocessing="causal_p0_0.5_45_v1", model="compact_cnn_seed2026",
-                                  probability_calibration="independent_meta_subjects",
-                                  policy="independent_validation_subjects_v1"),
+                                  probability_calibration="2_independent_meta_subjects_excluding_3_head_fit",
+                                  policy="independent_validation_subjects_v2"),
                     tool_calls=self.calls, tool_latency_ms=self.timings, assessment_latency_ms=elapsed,
                     ensemble_std=None, result=result,
                     verification=dict(verified=True, label_source="numerical_engine",
                                       confidence_scope="exploratory_development_gate_not_clinical"))
+        if method == 'adaptive':
+            pack['reliability'] = self.reliability()
+        if 'physiological_evidence' in self.memo:
+            pack['physiological_evidence'] = self.memo['physiological_evidence']
+        if 'CaseRetriever' in self.memo:
+            pack['case_retrieval'] = {key: value for key, value in self.memo['CaseRetriever'].items() if key != 'selected_indices'}
+        return pack
 
 
 def expected_calibration_error(y, p, bins=10):
@@ -265,6 +363,8 @@ def run(out, epochs=12, smoke=False):
     out, cache = Path(out), Path(out) / "cache"
     paths = json.loads((cache / "evaluation_manifest.json").read_text(encoding="utf-8"))
     audit = json.loads((cache / "dataset_audit.json").read_text(encoding="utf-8"))
+    if audit.get('schema_version') != 'raw_event_eligibility_v2':
+        raise ValueError('V2 training requires freshly audited raw-event-complete caches; historical caches are not eligible')
     rows = [json.loads(s) for s in (cache / "window_evidence.jsonl").read_text(encoding="utf-8").splitlines()]
     windows = np.load(cache / "windows.npy", mmap_mode="r")[:audit["accepted_windows"]]
     starts = np.asarray([r["start_sample"] / 1024 for r in rows])
@@ -281,15 +381,19 @@ def run(out, epochs=12, smoke=False):
     write_json(split_path, splits)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     run_dir = out / ("smoke" if smoke else "results")
+    if run_dir.exists():
+        raise FileExistsError('Preserve completed or partial runs; choose a fresh V2 output directory')
     run_dir.mkdir(exist_ok=True)
     (run_dir / "checkpoints").mkdir(exist_ok=True)
-    protocol = dict(seed=SEED, epochs=epochs, smoke=smoke, outer="LOSO", inner="14 base / 5 meta / 4 policy subjects",
+    protocol = dict(schema_version='pilot_v2', seed=SEED, epochs=epochs, smoke=smoke, outer="LOSO",
+                    inner="14 base / 3 head-fit + 2 probability-calibration meta / 4 policy subjects",
                     data_label_sha256=audit["label_sha256"], window_label_scope="weak_whole_path",
                     threshold=.5, clinical_symptom_truth=False, validation_target_accuracy=.80,
-                    validation_minimum_coverage=.35, margin_candidates=[.05, .1, .15, .2, .3, .4],
+                    validation_minimum_coverage=.35, thresholds='empirical independent policy-subject values',
                     python=platform.python_version(), torch=torch.__version__, device=str(device),
                     gpu=torch.cuda.get_device_name(0) if device.type == "cuda" else None,
-                    code_sha256={p.name: digest(p) for p in Path(__file__).parent.glob("*.py")})
+                    code_sha256={p.name: digest(p) for p in Path(__file__).parent.glob("*.py")},
+                    external_code_sha256={"vrms_refine/retrieval.py": digest(Path("vrms_refine/retrieval.py"))})
     write_json(run_dir / "protocol.json", protocol)
     all_records, all_packs, fold_audit, inner_records = [], [], [], []
     selected_splits = splits[:1] if smoke else splits
@@ -298,26 +402,52 @@ def run(out, epochs=12, smoke=False):
         fold_start = time.perf_counter()
         base = np.flatnonzero(np.isin(subject, split["base_train"]))
         meta = np.flatnonzero(np.isin(subject, split["meta_calibration"]))
+        head_fit = np.flatnonzero(np.isin(subject, split['head_fit']))
+        calibration = np.flatnonzero(np.isin(subject, split['probability_calibration']))
         val = np.flatnonzero(np.isin(subject, split["policy_validation"]))
         test = np.flatnonzero(subject == split["outer_subject"])
         cnn, mean, scale, training = train_cnn(windows, paths, base, device, epochs=epochs, seed=SEED)
         classifiers = {k: fit_logistic(v, y, base, c=.01 if k == "covariance" else .1) for k, v in pooled.items()}
         indices = np.r_[meta, val, test]
         features, win_scores = base_scores(paths, windows, starts, cnn, mean, scale, device, classifiers, pooled, indices)
-        heads = {k: fit_logistic(v, y, meta, c=.3, balanced=False) for k, v in features.items()}
+        heads = {k: fit_logistic(v, y, head_fit, c=.3, balanced=False) for k, v in features.items()}
         head_scores = {k: probabilities(heads[k], v) for k, v in features.items()}
-        margins = {k: choose_margin(head_scores[k][val], y[val])
-                   for k in ("deep_temporal", "deep_temporal_bio", "full")}
-        bundle = dict(cnn=cnn, mean=mean, scale=scale, classifiers=classifiers, meta=heads, margins=margins)
+        descriptors = np.full((len(paths), 60), np.nan)
+        for i, path in enumerate(paths):
+            descriptor = signal_descriptor(windows[path['window_start']:path['window_end']])
+            if descriptor is not None:
+                descriptors[i] = descriptor
+        fractions = [p['accepted_windows'] / max(p['total_possible_windows'], 1) for p in paths]
+        reliability = fit_reliability(head_scores['deep'], y, subject, descriptors, fractions,
+                                      base_indices=base, head_indices=head_fit,
+                                      calibration_indices=calibration, policy_indices=val)
+        from vrms_refine.retrieval import CaseRetriever
+        bank = []
+        for i in meta:
+            if i not in win_scores:
+                continue
+            dt, z = features['deep_temporal'][i], win_scores[i]
+            bank.append(dict(path_index=int(i), role='meta', evidence=dict(
+                temporal=dict(raw_mean_probability=float(np.mean(1 / (1 + np.exp(-np.clip(z, -30, 30))))),
+                              raw_probability_std=float(dt[1]), raw_recent_mean=float(dt[3]),
+                              raw_recent_slope_per_second=float(dt[4]), raw_last_probability=float(dt[5])),
+                qc_accepted_fraction=float(fractions[i]))))
+        evaluation = {i: dict(subject_key=int(subject[i]), label=int(y[i])) for i in meta}
+        retriever = CaseRetriever(bank, evaluation, k=5, allowed_subjects=split['meta_calibration']) if bank else None
+        bundle = dict(cnn=cnn, mean=mean, scale=scale, classifiers=classifiers, meta=heads,
+                      reliability=reliability, case_retriever=retriever)
         checkpoint = run_dir / "checkpoints" / f"outer_subject_{split['outer_subject']:02d}"
         torch.save(dict(model=cnn.state_dict(), mean=mean.cpu(), scale=scale.cpu(), seed=SEED,
                         training_subjects=split["base_train"], heldout_subject=split["outer_subject"]), str(checkpoint) + ".pt")
-        joblib.dump(dict(classifiers=classifiers, meta=heads, margins=margins, split=split), str(checkpoint) + ".joblib")
+        joblib.dump(dict(classifiers=classifiers, meta=heads, split=split,
+                         reliability=reliability, case_retriever=retriever), str(checkpoint) + ".joblib")
         for i in np.r_[meta, val]:
             inner_records.append(dict(outer_subject=split["outer_subject"], path_index=int(i),
                                       subject_key=int(subject[i]), role="meta" if i in meta else "policy_validation",
+                                      reliability_role='head_fit' if i in head_fit else 'probability_calibration' if i in calibration else 'policy_validation',
                                       label=int(y[i]), **{k: None if not np.isfinite(v[i]) else float(v[i])
-                                                         for k, v in head_scores.items()}))
+                                                         for k, v in head_scores.items()},
+                                      calibrated_deep_probability=reliability.calibrate(head_scores['deep'][i])))
         for i in test:
             p = paths[i]
             sl = slice(p["window_start"], p["window_end"])
@@ -333,15 +463,18 @@ def run(out, epochs=12, smoke=False):
                 row[f"{method}_latency_ms"] = pack["assessment_latency_ms"]
                 all_packs.append(pack)
                 expected_key = pack["result"]["stage"]
-                if probability is not None and expected_key in head_scores and np.isfinite(head_scores[expected_key][i]):
-                    if abs(probability - head_scores[expected_key][i]) > 2e-5:
+                expected = (reliability.calibrate(head_scores['deep'][i]) if method == 'adaptive'
+                            else head_scores.get(expected_key, np.full(len(paths), np.nan))[i])
+                if probability is not None and expected is not None and np.isfinite(expected):
+                    if abs(probability - expected) > 2e-5:
                         raise AssertionError(f"Cache versus real tool replay mismatch: {method}, path {i}")
             for method in ("biomarker", "covariance"):
                 value = head_scores[method][i]
                 row[f"{method}_probability"] = None if not np.isfinite(value) else float(value)
                 row[f"{method}_state"] = "insufficient_data" if not np.isfinite(value) else "high" if value >= .5 else "low"
             all_records.append(row)
-        fold_audit.append(dict(**split, **training, margins=margins,
+        fold_audit.append(dict(**split, **training, reliability_provenance=reliability.provenance,
+                               reliability_validation=reliability.validation,
                                seconds=time.perf_counter() - fold_start,
                                memory_rss_mb=psutil.Process().memory_info().rss / 2 ** 20))
         save_csv(run_dir / "path_oof.csv", all_records)
@@ -349,7 +482,7 @@ def run(out, epochs=12, smoke=False):
         write_json(run_dir / "fold_audit.json", fold_audit)
         print(f"fold {fold_number}/{len(selected_splits)} subject {split['outer_subject']:02d}: "
               f"paths={len(test)} loss={training['losses'][0]:.3f}->{training['losses'][-1]:.3f} "
-              f"margins={margins} time={time.perf_counter()-fold_start:.1f}s", flush=True)
+              f"reliability={reliability.validation['status']} time={time.perf_counter()-fold_start:.1f}s", flush=True)
         del cnn, bundle
         if device.type == "cuda":
             torch.cuda.empty_cache()
@@ -407,12 +540,13 @@ def write_report(out, summary, audit):
     def number(x, percent=False):
         return "—" if x is None else f"{100*x:.2f}%" if percent else f"{x:.3f}"
     lines = ["# VRMS真实数据单种子试验", "", f"状态：{summary['status']}；外层{summary['outer_folds']}折，共{summary['total_paths']}路径。",
-             "", "## 评价口径", "", "从原始CDT重建因果P0，5秒窗仅继承路径弱标签，主要评价整条路径评分高/低。外层LOSO；其余被试14训练、5融合/校准、4策略验证，四类被试不重叠。单种子2026，固定少量epochs，没有旧模型或LLM。",
+             "", "## 评价口径", "", "从原始CDT重建因果P0并排除EOF截断路径，5秒窗仅继承路径弱标签，主要评价整条路径评分高/低。外层LOSO；其余被试14基础训练、3分类头拟合、2独立概率校准、4策略验证，五类被试不重叠。单种子2026，固定epochs；本阶段未调用LLM。",
+             "", "V2 Adaptive的连续分数始终是独立校准的深度模型p_cal。Case RAG和生理工具提供解释证据，不修改p_cal；没有通过内部可靠性门槛时保持uncertain，质量不足时输出insufficient_data。Full等固定数值方法保留为诊断对照。",
              "", "下表BACC是所有合法连续分数按固定0.5阈值得到的数值诊断，包含尚未通过发布门槛的uncertain记录；正式发布类别的条件BACC和覆盖另列。它不等同真实即时症状检测。",
              "", "|方法|可评分路径|数值BACC|AUROC|Macro-F1|ECE|发布覆盖|发布条件BACC|", "|---|---:|---:|---:|---:|---:|---:|---:|"]
     for name, m in summary["methods"].items():
         lines.append(f"|{name}|{m['scoreable_paths']}|{number(m['numeric_threshold_diagnostic']['bacc'],True)}|{number(m['auroc'])}|{number(m['numeric_threshold_diagnostic']['macro_f1'])}|{number(m['ece'])}|{number(m['publication_coverage'],True)}|{number(m['published_conditional']['bacc'],True)}|")
-    lines += ["", "## 实际工具回放", "", "每条外层测试路径重新执行数值工具，Adaptive仅在请求时真正计算Bio/Cov；缓存与实时计算概率一致检查已完成。计时是这台电脑对已预处理有效窗口的数值评估耗时，含QC、模型和工具；不含原始流积累/预处理、首任务校准等待、Pi或云API/报告，所以不能解释为完整部署延迟或节能。",
+    lines += ["", "## 实际工具回放", "", "每条外层测试路径重新执行数值工具，Adaptive通过校准、信号质量与OOD门槛后可直接结束；困难样本先懒执行Case RAG，检索不可靠或冲突时再实际计算Bio/Cov。缓存与实时计算概率一致检查已完成。计时是这台电脑对已预处理有效窗口的数值评估耗时，含QC、模型和工具；不含原始流积累/预处理、首任务校准等待、Pi或云API/报告，所以不能解释为完整部署延迟或节能。",
               "", "|方法|平均专业工具调用/路径|电脑评估中位数ms|P95 ms|", "|---|---:|---:|---:|"]
     for name in ("deep", "deep_temporal", "full", "adaptive"):
         m = summary["methods"][name]
@@ -422,7 +556,8 @@ def write_report(out, summary, audit):
         lines.append(f"- {name}：共同可评分{comparison['common_paths']}路径，数值BACC差={number(comparison['bacc_difference'],True)}；按被试聚类95%区间={comparison['subject_bootstrap_95ci']}。")
     references = sum(s["reference_available"] for s in audit["subjects_audit"])
     mismatches = [Path(s["path"]).name for s in audit["sources"] if s["metadata_count_mismatch"]]
-    lines += ["", "## 限制与产物", "", f"- 有效初始参考：{references}/{audit['subjects']}人；有效5秒窗口{audit['accepted_windows']}。参考不足时Bio使用独立绝对谱模型，Cov不可用，Full/Adaptive走已建立的子集模型。",
+    lines += ["", "## 限制与产物", "", f"- 有效初始参考：{references}/{audit['subjects']}人；有效5秒窗口{audit['accepted_windows']}。参考不足时仅描述绝对谱，Cov不可用；Adaptive不以生理描述修改深度概率。",
+              "- Delta/Alpha等谱变化和协方差距离仅作客观描述；尚无独立方向验证时，生理verification保持inconclusive。邻域类别计数不是校准症状概率。",
               f"- DPO样本计数与实际完整数据不符的记录：{mismatches}；使用字节导出的完整样本数并核查任务边界，未修改原文件。",
               "- 单种子、小型CNN、较小内部校准/策略集、固定试验参数；不是充分优化模型、未经查看的外部验证、正式概率可靠性证明、即时预警或Pi实测。",
               "- 技术QC只做预声明sanity检查，没有验证对眼电等全部伪迹的敏感性。",
@@ -434,13 +569,20 @@ def write_report(out, summary, audit):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--stage", choices=("prepare", "smoke", "run"), required=True)
+    parser.add_argument("--stage", choices=("audit", "prepare", "smoke", "run"), required=True)
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--epochs", type=int, default=12)
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
-    if args.stage == "prepare":
+    if args.stage == 'audit':
+        _, eligibility = audit_eligibility(args.data_root)
+        target = args.out / 'eligibility_audit.json'
+        if target.exists():
+            raise FileExistsError('Preserve the existing audit; choose a fresh output directory')
+        write_json(target, eligibility)
+        print(json.dumps({k: v for k, v in eligibility.items() if k != 'candidates'}, indent=2), flush=True)
+    elif args.stage == "prepare":
         prepare(args.data_root, args.out / "cache")
     else:
         run(args.out, epochs=2 if args.stage == "smoke" else args.epochs, smoke=args.stage == "smoke")

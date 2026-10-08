@@ -1,50 +1,39 @@
-# Protocol and known limits
+# V2 protocol and evidence boundaries
 
-## Data contract
+## Data eligibility
 
-The existing pilot is a dataset-specific, single-seed (2026) experiment. Its historical cache contract expects 24 subjects and 147 candidate paths, with path scores `<30` / `>=30` (71/76). It is not a generic arbitrary-dataset loader.
+The endpoint is a whole-path score `<30` / `>=30`. Window labels are weak path labels, not instantaneous symptoms. CDT is float32 little-endian, sample-major, 1024 Hz, 37 channels; the model uses 30 EEG channels excluding M1/M2, which provide the simultaneous average reference. Stateful causal notch/bandpass/antialias processing yields 256 Hz, 5-second windows.
 
-```text
-data-root/
-  raw/Acquisition xx.cdt
-  raw/Acquisition xx.cdt.dpo
-  raw/Acquisition xx.cdt.ceo
-  labels/task_segments_with_path_scores.csv
-  labels/state_segments_by_mark.csv
-```
+The data root must contain `raw/Acquisition xx.cdt[.dpo/.ceo]` and `labels/task_segments_with_path_scores.csv`, `labels/state_segments_by_mark.csv`. Task rows need file, subject_id, completeness/score flags, duration, start/end raw samples and path_score. Event completeness is verified against the actual task marks, not only CSV flags or a clipped endpoint.
 
-CDT is little-endian float32, sample-major, 1024 Hz; DPO supplies 37-channel metadata and microvolt units. The 30 EEG channels exclude M1/M2, which provide the simultaneous reference. P0 uses a causal 50 Hz notch, 0.5–45 Hz bandpass, antialias filter and 1024→256 Hz decimation with preserved state. Model windows have shape 30×1280 and last 5 seconds. QC is an engineering sanity gate, not a clinically validated artifact detector.
+`audit_eligibility` retains all scored candidate records and exclusion reasons. CEO task marks are primary; if absent, Trigger channel transitions are used. The first event after a start20 must be the corresponding end22, exactly matching the CSV endpoint and within actual raw samples. The known acquisition04 candidate starts2516402, ends at clipped CSV EOF2626240, while its actual end22 is2645592. Current read-only audit gives147 candidates,146 eligible paths,24 subjects. Preparation allocates caches only after this filtering. Counts in downstream V2 stages are manifest-derived.
 
-Each scored path needs a score, at least 15 seconds and complete task boundaries. Initial reference features require a complete rest before the first task, at least 10 seconds after warm-up and at most 30 seconds. Missing reference features remain unavailable.
+An initial complete rest before the first task supplies a reference only if at least10 seconds remain after warm-up; at most30 seconds are used. Missing references stay unavailable. QC amplitude/nonflatness checks are engineering sanity constraints; the additional fraction acceptance gate is learned on internal policy subjects. QC has not been proven to detect every artifact.
 
-The label CSV needs `file`, `subject_id`, `is_complete`, `path_score_available`, `duration_sec`, `start_sample_1024`, `end_sample_1024`, `path_score`. The state CSV needs `subject_id`, `state`, `is_complete`, `start_sample_1024`, `end_sample_1024`. Use real audited event-to-score alignment; do not manufacture these labels from the synthetic example.
+## Subject roles and calibration
 
-## Known event-completeness problem
+Each of24 outer LOSO folds has14 base-training,5 meta,4 policy-validation and1 outer-test subject. The5 meta subjects are partitioned into3 head-fit and2 probability-calibration subjects with class support checked internally. CNN and physiological classifiers fit base subjects only, with fixed epochs. Classification heads fit the3 head-fit subjects. A monotone Platt calibrator fits deep-head predictions from the other2 meta subjects. There is no calibration on the same head-fit prediction rows.
 
-The historical loader trusts CSV completeness flags and checks only that its saved endpoint fits the raw file. An audited candidate's endpoint was clipped to EOF while its actual ending event occurred 18.8984 seconds later. The historical 147-path evaluation therefore includes a truncated candidate; 146 paths have complete raw events. A separate recording correctly uses Trigger-channel fallback rather than CEO events.
+OOD features are cheap log channel-scale/amplitude descriptors; robust center and scale use base-training signals only. Margin, OOD distance and valid-window-fraction cutoffs are empirical internal policy-set values. The declared selection goals are accuracy>=.80, coverage>=.35 and at least8 accepted paths. These are exploratory goals, not a reliability guarantee. Missing classes, failed calibration, reversed calibration slope or unmet policy goals prevent a reliable class release.
 
-This source release documents, but does not silently repair, the historical experiment. Excluding the truncated path requires new eligibility/cache artifacts and rerunning affected train/meta/policy stages. Removing one final OOF row does not repair its participation in other folds. The `147/24` and downstream request-count guards still reflect the old frozen contract and must be deliberately revised together for a corrected experiment.
+The four outputs are high/low/uncertain/insufficient_data. Final probability is p_cal exclusively; p_raw is separate. A usable but uncertain/OOD input remains uncertain; poor signal quality can yield insufficient_data. No valid calibration produces p_cal=null. Auxiliary tool classifiers and their consensus are diagnostic, not probability updates.
 
-## Splits and numerical candidates
+## Dynamic evidence and Case RAG
 
-Outer evaluation leaves one subject out in each of 24 folds. The other subjects are split into 14 base-training, 5 meta/calibration and 4 policy-validation subjects. Base models exclude meta/policy/test subjects; meta heads exclude policy/test subjects. The policy set selects the final numerical candidate by BACC. Whole-path labels supervise windows weakly; window scores are not momentary symptom truth.
+ToolReplay memoizes actual operations and records calls/timing. The deep+quality reliability gate can exit before retrieval/physiology. Otherwise CaseRetriever is called; unreliable/unvalidated retrieval or mixed/conflicting cases trigger Biomarker and available-reference Covariance. These tools do not overwrite p_cal. V2 cloud.prepare only builds deep/temporal/QC snapshots. Offline preparation timing is not the runtime lazy latency.
 
-Candidates are original full evidence, regional spectrum, spatial spectrum, training-reference tangent covariance, path MIL CNN and their mean. MIL samples 16 windows per path, averages logits and applies one path-level BCE term. Epochs 8/16/32 are selected using meta labels; window normalization, dropout .35 and AdamW regularization are jointly changed. The measured gain is not an isolated MIL ablation.
+Retrieval uses shared finite raw deep/temporal/QC coordinates standardized on the internal case bank. Rankings are not label constrained. K=5, one case per subject, from the5 meta subjects; query subjects are excluded. Returned distances, high/low counts, distinct subject count, feature availability and range status are descriptions. Class count fractions are not calibrated outcome probabilities.
 
-Refinement cross-fits calibration heads, not the whole frozen encoder/epoch selection. Its policy CV is conditional on a numerical candidate already selected with all four policy subjects. Outer data have been examined repeatedly and remain exploratory.
+Reliable distance ranges are selected from meta-only subject-LOSO neighbor votes with scaler refits excluding each heldout subject. Range evaluation uses a nested LOSO that also excludes the evaluation subject from threshold selection. If no internal threshold passes the declared goals, the retrieval is unvalidated. Per-fold internal banks overlap across outer folds, so these diagnostics cannot be counted as independent outer evidence. Balanced up-to4-per-class few-shot selection is retained as a separate control.
 
-## Agent contract
+## Physiological and cloud evidence
 
-Independent requests contain one anonymous query and internal examples only. Evidence includes numerical probabilities, temporal summaries, four-band power summaries, initial-reference changes, unsigned covariance distance, QC fraction and reference availability. Ground truth and source identifiers are rejected in query evidence. Example labels come only from internal meta subjects.
+Biomarker descriptions report mean relative delta/theta/alpha/beta power and natural-log changes from the initial pre-task reference. Covariance distance is the mean Frobenius norm of the log reference-whitened covariance. Its magnitude has no high/low direction. No fixed spectral direction rule is used. Without independent directional verification the structured verification stays inconclusive with null model conflict. Missing reference is not low-class evidence.
 
-The model returns `id`, `high_probability`, `state`, `uncertain`, `reason`. State must agree with probability threshold .5. The fixed comparison mixes numerical/cloud scores .75/.25; failures retain the numeric output and are logged. The cloud cannot choose its own blend weight. Uncertainty flags and `max(p, 1-p)` are not calibrated confidence.
+The cloud schema returns only id, supporting_evidence, conflicting_evidence, missing_evidence and explanation. It cannot return probabilities, final states or confidence. Supervisor determines the final state from machine reliability. Explanations, failures or injected scores cannot change p_cal or release an unvalidated class. Reliable and quality-rejected cases skip cloud calls. Requests contain one anonymous query, internal examples and no query labels/source identities/raw EEG. Local audits may keep subject provenance; outbound reliability contains counts only.
 
-GPT per-fold batches are preserved as a separate diagnostic context; they are not online causal single-path requests. The weight sweep selects maxima using already examined outer labels and is explicitly post hoc. Its intervals do not correct this search bias.
+## Reporting and preserved history
 
-## Reporting and release scope
+Report all eligible-path denominators, score coverage, publication coverage, conditional published metrics, Brier/AUROC and model-threshold diagnostics separately. Refusals remain in the denominator. Subject-cluster bootstrap is appropriate for comparisons; windows are not independent replicates. Tool timing is desktop assessment after preprocessing, excluding recording time, complete deployment latency, clinical/Pi validity and any skipped computation.
 
-Report path ACC, BACC, AUROC, Brier and coverage separately; covariance's available-reference subset and published-only accuracy cannot be ranked directly against all-path metrics. Bootstrap resamples subjects, not windows. Logical API success counts include recovery attempts; actual attempts and failure history must remain visible.
-
-Historical point estimates were 63.95% for the selected numerical procedure, 65.99% for original GPT fusion and 63.27% for original DeepSeek fusion. GPT refinement's primary result was 63.95%, DeepSeek refinement 66.67%; both accuracy/calibration promotion gates failed. The secondary GPT calibrated result 67.35% did not pass its calibration gate.
-
-This release contains no original recordings, scores, checkpoints, per-subject predictions or API responses. It includes no Pi hardware measurements, complete streaming service or official BrainAgent implementation. Public contract tests verify engineering properties; they do not establish clinical/generalization validity or repair the eligibility problem.
+V2 defaults use independent v2_seed2026 directories. Existing caches/training results are not overwritten. Old147-path caches/checkpoints are rejected and must be regenerated after eligibility correction. Merely dropping the old final OOF row does not repair earlier model fitting or selection. V1 code/results and release manifests remain historical references (commit205abc7), with no V2 performance claim. No formal retraining or real API experiment was run for this change. Previously inspected outer data remain exploratory.

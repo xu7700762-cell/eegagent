@@ -1,35 +1,20 @@
 {
-  "frozen_before_full_api_run": true,
-  "outer_results_used_to_select_methods": false,
-  "primary_selection": "four policy subjects leave-one-subject-out; maximum pooled path ACC, then minimum Brier, then candidate order",
-  "primary_candidates": [
-    {"name": "numeric", "kind": "fixed", "source": "numeric"},
-    {"name": "baseline25", "kind": "fixed", "source": "baseline25"},
-    {"name": "enhanced25", "kind": "fixed", "source": "enhanced25"},
-    {"name": "baseline_validated_blend", "kind": "blend", "source": "baseline"},
-    {"name": "enhanced_validated_blend", "kind": "blend", "source": "enhanced"},
-    {"name": "fusion_C001", "kind": "logistic", "features": "two_probabilities", "C": 0.01},
-    {"name": "fusion_C01", "kind": "logistic", "features": "two_probabilities", "C": 0.1},
-    {"name": "fusion_C1", "kind": "logistic", "features": "two_probabilities", "C": 1.0},
-    {"name": "quality_fusion_C01", "kind": "logistic", "features": "probabilities_quality_conflict", "C": 0.1}
-  ],
-  "blend_weight_grid": [0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1],
-  "blend_ties": "smallest cloud weight",
-  "secondary_calibration_source": "original baseline25",
-  "secondary_calibration_candidates": [
-    {"name": "identity", "kind": "fixed", "source": "baseline25"},
-    {"name": "platt_C001", "kind": "logistic", "features": "baseline25_only", "C": 0.01},
-    {"name": "platt_C01", "kind": "logistic", "features": "baseline25_only", "C": 0.1},
-    {"name": "platt_C1", "kind": "logistic", "features": "baseline25_only", "C": 1.0}
-  ],
-  "secondary_selection": "minimum grouped-crossfit Brier; eligible only if CV correct count loses at most one case versus identity; ties prefer identity",
-  "selective_confidence_thresholds": [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95],
-  "selective_minimum_validation_cases": 8,
-  "selective_minimum_validation_coverage": 0.7,
-  "selective_target_validation_accuracy": 0.8,
-  "selective_no_valid_threshold": "all uncertain; no claimed precision gain",
-  "learning": "StandardScaler and unbalanced LogisticRegression fitted only on policy training subjects; prior-only numeric fallback if a training split has one class",
-  "legacy_numeric_selection_caveat": "Frozen numerical candidate was previously selected on all four policy subjects; the new fusion CV is conditional on that prior selection, not a re-nested numerical model search",
-  "uncertainty": "2000 paired subject-cluster bootstrap replicates, seed2026, percentile 95% intervals; exploratory, already examined outer dataset",
-  "uncertainty_flags": "record only; never treated as calibrated reliability or used to claim a confidence gain"
+  "schema_version": "uncertainty_agent_v2",
+  "frozen_before_api": true,
+  "llm_probability_modification": false,
+  "retrieval": {
+    "k": 5,
+    "subject_cap": 1,
+    "class_quota": null,
+    "fingerprint": "raw deep-temporal summaries and QC",
+    "target_accuracy": 0.8,
+    "minimum_cases": 8,
+    "minimum_coverage": 0.35,
+    "distance_cutoff": "selected from meta-subject LOSO only; absent when no gate passes",
+    "control": "balanced_few_shot_control: up to 4 cases per class"
+  },
+  "evaluation": "nested meta-subject LOSO, excluding the query subject from scaling, cases and distance cutoff selection",
+  "class_counts_are_not_probabilities": true,
+  "final_probability_source": "calibrated deep model only",
+  "limitation": "Five internal meta subjects and a frozen encoder; retrieval diagnostics do not establish clinical reliability or LLM outcome gains"
 }

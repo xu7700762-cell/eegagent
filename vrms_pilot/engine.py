@@ -48,7 +48,7 @@ def consensus(probabilities, min_strength=0.05):
 
 
 def choose_margin(probabilities, y, minimum_coverage=0.35, target_accuracy=0.80):
-    """Only the independent inner policy-validation labels may enter here."""
+    """Historical V1 margin diagnostic; unused by V2 adaptive decisions."""
     p, y = np.asarray(probabilities), np.asarray(y)
     finite = np.isfinite(p)
     for margin in (0.05, 0.10, 0.15, 0.20, 0.30, 0.40):
@@ -59,48 +59,40 @@ def choose_margin(probabilities, y, minimum_coverage=0.35, target_accuracy=0.80)
     return None
 
 
-def adaptive_policy(scores, margins, reference_available=True):
-    """Stops current evidence acquisition, not stream collection.
+def adaptive_policy(scores, margins=None, reference_available=True, *, reliability=None):
+    """Acquire cases, then physiology lazily; preserve the calibrated deep score.
 
-    scores are supplied lazily by callable tool/meta functions. Deep and Temporal
-    form one group. Covariance may remain unavailable or fail to resolve conflict.
+    ``margins`` is retained for callers loading historical bundles but cannot
+    authorize a V2 exit. Publication needs independently fitted reliability.
+    Case label counts and unsigned physiology never become new probabilities.
     """
+    gate = dict(reliability or {})
     trace = []
-    qdeep = scores("deep")
+    p = gate.get("p_cal")
+    p = float(p) if p is not None and np.isfinite(p) else None
+    if gate.get("signal_quality_bad"):
+        return dict(probability=p, state="insufficient_data", stage="deep", requested_tools=trace,
+                    stop_reason="signal_quality_rejected", evidence_conflict=False,
+                    consensus=consensus([]))
+    scores("deep")
     trace.append("DeepVRMSDetector")
-    qdt = scores("deep_temporal")
-    trace.append("TemporalAnalyzer")
-    stage = "deep_temporal"
-    q = qdt
-    consensus_result = consensus([qdt])
-    def acceptable(name, probability, conflict):
-        margin = margins.get(name)
-        return (probability is not None and np.isfinite(probability) and margin is not None
-                and abs(probability - 0.5) >= margin
-                and consensus_result["status"] == "measured"
-                and (conflict is None or conflict < 0.5))
-    if acceptable(stage, q, consensus_result["conflict_score"]):
-        return dict(probability=float(q), state="high" if q >= .5 else "low",
-                    stage=stage, requested_tools=trace, stop_reason="validated_margin_temporal",
-                    consensus=consensus_result)
-    qb = scores("biomarker")
-    trace.append("BiomarkerCalculator")
-    stage = "deep_temporal_bio"
-    q = scores(stage)
-    consensus_result = consensus([qdt, qb])
-    if acceptable(stage, q, consensus_result["conflict_score"]):
-        return dict(probability=float(q), state="high" if q >= .5 else "low",
-                    stage=stage, requested_tools=trace, stop_reason="validated_margin_bio",
-                    consensus=consensus_result)
-    if reference_available:
-        qc = scores("covariance")
-        trace.append("CovarianceAnalyzer")
-        stage = "full"
-        q = scores(stage)
-        consensus_result = consensus([qdt, qb, qc])
-    resolved = acceptable(stage, q, consensus_result["conflict_score"])
-    return dict(probability=None if q is None or not np.isfinite(q) else float(q),
-                state=("high" if q >= .5 else "low") if resolved else "uncertain",
-                stage=stage, requested_tools=trace,
-                stop_reason="validated_full_evidence" if resolved else "unresolved_or_unvalidated_exit",
-                consensus=consensus_result)
+    reliable = (p is not None and gate.get("prediction_reliable") is True
+                and gate.get("ood") is False and not gate.get("evidence_conflict", False))
+    if reliable:
+        return dict(probability=p, state="high" if p >= .5 else "low", stage="deep", requested_tools=trace,
+                    stop_reason="validated_calibration_quality_ood_exit", evidence_conflict=False,
+                    consensus=consensus([p]))
+    retrieval = scores("case_retrieval") or {}
+    trace.append("CaseRetriever")
+    quality = retrieval.get("retrieval_quality", {})
+    conflict = bool(gate.get("evidence_conflict", False) or retrieval.get("evidence_conflict", False))
+    physiological_scores = []
+    if quality.get("reliable") is not True or conflict:
+        physiological_scores.append(scores("biomarker"))
+        trace.append("BiomarkerCalculator")
+        if reference_available:
+            physiological_scores.append(scores("covariance"))
+            trace.append("CovarianceAnalyzer")
+    return dict(probability=p, state="uncertain", stage="deep", requested_tools=trace,
+                stop_reason="unresolved_or_unvalidated_exit", evidence_conflict=conflict,
+                retrieval_quality=quality, consensus=consensus(physiological_scores))

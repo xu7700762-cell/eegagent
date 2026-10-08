@@ -109,18 +109,102 @@ def covariance_features(x, reference, invroot=None):
     return np.r_[tangent, np.linalg.norm(logc, "fro")].astype(np.float32)
 
 
+def task_events(raw_path, meta):
+    """Keep CEO events beyond EOF for auditing; fall back only if no task marks exist."""
+    ceo = Path(str(raw_path) + ".ceo")
+    text = ceo.read_text(encoding="utf-8", errors="strict") if ceo.exists() else ""
+    block = re.search(r"NUMBER_LIST START_LIST[^\n]*\n(.*?)NUMBER_LIST END_LIST", text, re.S)
+    events = []
+    if block:
+        for line in block.group(1).splitlines():
+            fields = line.split()
+            if len(fields) >= 3:
+                sample, mark = int(float(fields[0])), int(float(fields[2]))
+                if mark in (20, 22):
+                    events.append((sample, mark))
+    if events:
+        return sorted(set(events)), "ceo_number_list"
+    if "Trigger" not in meta["names"]:
+        raise ValueError("No task events or Trigger channel available")
+    actual = Path(raw_path).stat().st_size // (meta["channels"] * 4)
+    raw = np.memmap(raw_path, dtype="<f4", mode="r", shape=(actual, meta["channels"]))
+    previous = 0
+    col = meta["names"].index("Trigger")
+    for start in range(0, actual, 65536):
+        values = np.rint(raw[start:start + 65536, col]).astype(np.int64)
+        prior = np.r_[previous, values[:-1]]
+        hits = np.flatnonzero((values != prior) & np.isin(values, [20, 22]))
+        events.extend((start + int(i), int(values[i])) for i in hits)
+        previous = int(values[-1])
+    del raw
+    return events, "trigger_channel_fallback"
+
+
+def boundary_audit(row, events, actual_samples):
+    a, b = int(row["start_sample_1024"]), int(row["end_sample_1024"])
+    marks = sorted(set(events))
+    reasons = []
+    if not 0 <= a < b <= actual_samples:
+        reasons.append("boundary_outside_raw")
+    if (a, 20) not in marks:
+        reasons.append("start_event_missing")
+    following = next(((s, m) for s, m in marks if s > a), None)
+    actual_end = following[0] if following and following[1] == 22 else None
+    if actual_end != b:
+        reasons.append("end_event_mismatch")
+    if actual_end is not None and actual_end > actual_samples:
+        reasons.append("end_event_after_eof")
+    return dict(raw_complete=not reasons, exclusion_reasons=reasons,
+                actual_end_event_sample=actual_end, csv_end_sample=b, raw_samples=actual_samples)
+
+
+def audit_eligibility(data_root):
+    """Read-only event audit before cache allocation or any training split."""
+    root = Path(data_root)
+    labels = root / "labels/task_segments_with_path_scores.csv"
+    tasks = [r for r in read_csv(labels) if r["is_complete"].lower() == "true"
+             and r["path_score_available"].lower() == "true" and r["path_score"]
+             and float(r["duration_sec"]) >= 15]
+    tasks.sort(key=lambda r: (int(r["subject_id"]), int(r["start_sample_1024"])))
+    sources, candidates, eligible = {}, [], []
+    for row in tasks:
+        filename = row["file"]
+        if filename not in sources:
+            raw = root / "raw" / (filename + ".cdt")
+            meta = parse_dpo(str(raw) + ".dpo")
+            if raw.stat().st_size % (meta["channels"] * 4):
+                raise ValueError(f"Partial raw frame: {raw}")
+            events, event_source = task_events(raw, meta)
+            sources[filename] = (events, raw.stat().st_size // (meta["channels"] * 4), event_source)
+        events, actual, event_source = sources[filename]
+        check = boundary_audit(row, events, actual)
+        candidates.append(dict(candidate_index=len(candidates), file=filename,
+                               subject_key=int(row["subject_id"]),
+                               start_sample=int(row["start_sample_1024"]),
+                               event_source=event_source, **check))
+        if check["raw_complete"]:
+            eligible.append(row)
+    if not eligible:
+        raise ValueError("No scored paths have complete raw task events")
+    return eligible, dict(schema_version="raw_event_eligibility_v2", candidate_paths=len(tasks),
+                          paths=len(eligible), subjects=len({r["subject_id"] for r in eligible}),
+                          excluded_paths=len(tasks) - len(eligible), candidates=candidates,
+                          label_sha256=digest(labels), source_modified=False)
+
+
 def prepare(data_root, out):
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     labels = Path(data_root) / "labels/task_segments_with_path_scores.csv"
     states = Path(data_root) / "labels/state_segments_by_mark.csv"
-    tasks = [r for r in read_csv(labels) if r["is_complete"].lower() == "true"
-             and r["path_score_available"].lower() == "true" and float(r["duration_sec"]) >= 15]
-    tasks.sort(key=lambda r: (int(r["subject_id"]), int(r["start_sample_1024"])))
+    if (out / "dataset_audit.json").exists() or (out / "windows.npy").exists():
+        raise ValueError("Cache already exists; use a fresh V2 output directory")
+    tasks, eligibility = audit_eligibility(data_root)
+    write_json(out / "eligibility_audit.json", eligibility)
     all_states = read_csv(states)
     subjects = sorted({int(r["subject_id"]) for r in tasks})
-    if len(tasks) != 147 or len(subjects) != 24:
-        raise ValueError("Current dataset changed; re-audit eligibility before running")
+    if len(subjects) != 24:
+        raise ValueError("This experiment requires 24 subjects; inspect the eligibility audit")
     max_windows = sum((int(r["end_sample_1024"]) - int(r["start_sample_1024"])) // (5 * FS_RAW) for r in tasks)
     cache = np.lib.format.open_memmap(out / "windows.npy", mode="w+", dtype=np.float32,
                                      shape=(max_windows, 30, WINDOW))
@@ -230,7 +314,8 @@ def prepare(data_root, out):
                                 mtime_ns=raw_path.stat().st_mtime_ns, dpo_sha256=digest(dpo)))
         source_info[-1].update(dpo_samples=meta["samples"], actual_samples=actual_samples,
                                metadata_count_mismatch=meta["samples"] != actual_samples,
-                               requested_end_sample=last_needed)
+                               requested_end_sample=last_needed,
+                               ceo_sha256=digest(str(raw_path) + ".ceo") if Path(str(raw_path) + ".ceo").exists() else None)
         print(f"prepared subject {subject:02d}: {subject_count} windows; reference={reference is not None}; "
               f"{time.perf_counter() - start_time:.1f}s", flush=True)
         del processed
@@ -246,7 +331,11 @@ def prepare(data_root, out):
         for r in window_records:
             f.write(json.dumps(r, ensure_ascii=False, allow_nan=False) + "\n")
     write_json(out / "evaluation_manifest.json", evaluation)
-    write_json(out / "dataset_audit.json", dict(label_sha256=digest(labels), state_sha256=digest(states),
+    write_json(out / "dataset_audit.json", dict(schema_version="raw_event_eligibility_v2",
+                                               candidate_paths=eligibility["candidate_paths"],
+                                               excluded_paths=eligibility["excluded_paths"],
+                                               eligibility_sha256=digest(out / "eligibility_audit.json"),
+                                               label_sha256=digest(labels), state_sha256=digest(states),
                                                paths=len(evaluation), subjects=len(subjects),
                                                accepted_windows=cursor, allocated_windows=max_windows,
                                                channel_order=channel_order, subjects_audit=subject_audit,

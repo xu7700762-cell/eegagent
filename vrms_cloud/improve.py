@@ -173,6 +173,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = parser.parse_args()
+    protocol_path = args.out / "protocol.json"
+    if protocol_path.exists() and json.loads(protocol_path.read_text(encoding="utf-8")).get("schema_version") == "uncertainty_agent_v2":
+        raise ValueError("Historical candidate training is excluded from V2; use the frozen V2 pilot probability")
     cache = PILOT_OUT / "cache"
     paths = json.loads((cache / "evaluation_manifest.json").read_text(encoding="utf-8"))
     audit = json.loads((cache / "dataset_audit.json").read_text(encoding="utf-8"))

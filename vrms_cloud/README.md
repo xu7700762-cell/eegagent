@@ -1,23 +1,26 @@
-# Cloud judgement and improved numerical candidates
+# Cloud explanation and deterministic Supervisor V2
 
-`improve.py` adds path MIL, regional/channel spectral candidates, training-reference tangent covariance and an internally selected numerical procedure. `prepare.py` rebuilds label-free evidence from frozen pilot models. `cloud.py` handles Responses API requests, blind prompts, parsing, retries and logs. `supervisor.py` provides final judgement/fusion.
+`prepare.py` reconstructs only deep/temporal/QC snapshots from fresh V2 checkpoints and freezes artifact hashes. `independent.py` uses actual ToolReplay lazy decisions before optional API analysis. `cloud.py` provides a strict explanation-only Responses schema; `supervisor.py` preserves the calibrated model probability and machine reliability state. Reliable and poor-quality paths skip cloud calls.
 
 ```python
 from vrms_cloud.supervisor import assess_evidence
-result = assess_evidence(evidence, internal_examples, numeric_probability, log_path, llm_weight=.25)
+result = assess_evidence(evidence, retrieved_examples, raw_deep_probability, log_path,
+                         reliability=machine_reliability, decision=lazy_decision)
 ```
 
-Configure `EEG_GPT_BASE_URL`, `EEG_GPT_MODEL`, `EEG_GPT_KEY` in the environment or an explicit project `.env`. It never reads another application's credentials. The Responses model must support the supplied schema and reasoning parameters.
+The response has supporting_evidence/conflicting_evidence/missing_evidence/explanation. It cannot return a new probability/class. p_cal is independently calibrated deep probability; invalid/missing calibration yields null and uncertainty. Old score caches or changed request hashes are rejected. Failures retain the same p_cal and machine gate.
 
 ```bash
 python -m vrms_cloud.prepare
-python -m vrms_cloud.improve
-# Actual API calls:
-python -m vrms_cloud.cloud --modes zero_shot few_shot improved_few_shot --workers 3
+python -m vrms_cloud.independent --dry-run
+python -m vrms_cloud.evaluate --offline
+python -m vrms_cloud.validate --offline
+# Actual optional explanation API requests:
 python -m vrms_cloud.independent --workers 4
-# Cached evaluation and frozen-model inference checks:
 python -m vrms_cloud.evaluate
 python -m vrms_cloud.validate
 ```
 
-Default outputs: `outputs/vrms_cloud/20261008_seed2026`. Preparation/improvement overwrite stage artifacts. Independent mode contains one held-out path and internal examples. Fold batches remain a separate diagnostic context. Failures keep the numerical result; confidence is uncalibrated. See [reproduction](../docs/REPRODUCTION.md) and [protocol](../docs/PROTOCOL.md).
+Default output: `outputs/vrms_cloud/v2_seed2026`. Custom pilot/output paths use prepare --pilot-out and --out, then the same --out for later commands. Preparation requires full V2 results; existing preparation is not overwritten. Frozen checkpoints, eligibility/caches, source files and labels are checked. Batch mode is a legacy diagnostic; V2 cloud CLI delegates to the independent runner.
+
+Configure EEG_GPT_BASE_URL/MODEL/KEY in project .env/environment only. Dry-run uses no configuration/API. `improve.py` contains historical MIL/numerical comparisons and is excluded from V2 probability decisions. Contract tests and data eligibility are not new model performance evidence.

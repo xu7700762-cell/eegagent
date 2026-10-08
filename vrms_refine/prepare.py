@@ -1,241 +1,188 @@
-"""Build baseline/enhanced single-path requests; no outer-label selection.
+"""Freeze read-only V2 retrieval comparisons; no training/current-path tools.
 
-Enhanced examples and reliability use leave-one-meta-subject-out calibration
-heads, conditional on frozen encoders. MIL epoch selection previously used all
-meta subjects; that remaining dependence is disclosed, not called fully
-cross-fitted encoder evaluation.
+Runtime acquisition uses CaseRetriever through ToolReplay. This offline prompt
+comparison reads only deep/temporal/QC snapshots and never prepares physiology.
 """
 import argparse
 import copy
-import csv
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
-import sys
 
-import joblib
 import numpy as np
-import torch
 
-from vrms_cloud.cloud import choose_examples
-from vrms_cloud.improve import PathMILCNN, mil_scores, path_features, tangent_features
-from vrms_pilot.experiment import base_scores, fit_logistic, logit, pool_features, probabilities
-from vrms_pilot.model import CompactEEGCNN
-from vrms_weights.scan import metrics
-from .common import CLOUD, DEEPSEEK, PILOT, DEFAULT_OUT, job_hash, message_for, read_json, sha, write_json, select_source_indices
-
-
-def fraction(value):
-    return None if not np.isfinite(value) else round(float(value), 4)
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from .common import CLOUD, DEFAULT_OUT, job_hash, message_for, read_json, sha, write_json
+from .retrieval import TEMPORAL_FIELDS, CaseRetriever, case_vector, _scale
+from vrms_cloud.cloud import SYSTEM
 
 
 def head_crossfit(x, y, groups, meta, c):
+    """Retained head-only diagnostic, not a fully cross-fitted encoder."""
     p = np.full(len(y), np.nan)
     provenance, prior_fallbacks = [], 0
     for subject in np.unique(groups[meta]):
         training = meta[groups[meta] != subject]
         target = meta[groups[meta] == subject]
-        model = fit_logistic(x, y, training, c=c, balanced=False)
-        if model is None:
-            good = target[np.isfinite(x[target]).all(axis=1)]
+        fitting = training[np.isfinite(x[training]).all(axis=1)]
+        good = target[np.isfinite(x[target]).all(axis=1)]
+        if len(fitting) < 6 or len(np.unique(y[fitting])) < 2:
             p[good] = (float(y[training].sum()) + .5) / (len(training) + 1)
             prior_fallbacks += len(good)
         else:
-            p[target] = probabilities(model, x)[target]
+            model = make_pipeline(StandardScaler(), LogisticRegression(C=c, solver="liblinear", max_iter=1000,
+                                                                       class_weight=None, random_state=2026))
+            model.fit(x[fitting], y[fitting])
+            p[good] = model.predict_proba(x[good])[:, 1]
         provenance.append(dict(heldout_subject=int(subject), training_subjects=np.unique(groups[training]).tolist(),
                                target_indices=target.tolist(), training_indices=training.tolist()))
     return p, dict(folds=provenance, prior_fallbacks=prior_fallbacks)
 
 
 def raw_vector(evidence):
-    temporal = evidence["temporal"]
-    values = [temporal[k] for k in ("raw_mean_probability", "raw_probability_std", "raw_recent_mean",
-                                   "raw_recent_slope_per_second", "raw_last_probability")]
-    values += evidence["relative_band_power"]
-    values += evidence["reference_log_change"] or [None] * 4
-    values += [evidence["covariance_distance"], evidence["qc_accepted_fraction"], float(evidence["reference_available"])]
-    return np.asarray([np.nan if v is None else v for v in values], float)
+    return case_vector(evidence)
 
 
-def retrieve_examples(query, bank, evaluation, per_class=4):
-    """Scale on the internal bank only; raw EEG features exclude calibrated scores."""
-    x = np.stack([raw_vector(r["evidence"]) for r in bank])
-    q = raw_vector(query)
-    scale = np.asarray([max(float(np.std(x[np.isfinite(x[:, j]), j])), 1e-4)
-                        if np.isfinite(x[:, j]).any() else 1. for j in range(x.shape[1])])
-    distance = []
-    for row in x:
-        common = np.isfinite(row) & np.isfinite(q)
-        distance.append(float(np.mean(np.minimum(((row[common] - q[common]) / scale[common]) ** 2, 25))))
+def retrieve_examples(query, bank, evaluation, k=5, query_subject=None):
+    """True distance Top K, one case per subject, with no class quota."""
+    result = CaseRetriever(bank, evaluation, k=k)(query, query_subject=query_subject)
+    return result["examples"], result["selected_indices"]
+
+
+def retrieve_balanced_examples(query, bank, evaluation, per_class=4, query_subject=None):
+    """Preserved 4 high + 4 low policy, explicitly a similar few-shot control.
+
+    The common V2 fingerprint isolates label quotas and subject caps. The old
+    diversity-first policy allows repeat subjects after the first diversity pass.
+    """
+    bank = [record for record in bank if evaluation[record["path_index"]]["subject_key"] != query_subject]
+    validated = CaseRetriever(bank, evaluation)
+    q, scale = case_vector(query), _scale(validated.records)
+    candidates = []
+    for record in validated.records:
+        row = case_vector(record["evidence"])
+        common = np.isfinite(q) & np.isfinite(row)
+        if common[:len(TEMPORAL_FIELDS)].any():
+            candidates.append((float(np.mean(((row[common] - q[common]) / scale[common]) ** 2)), record))
+    candidates.sort(key=lambda item: (item[0], item[1]["path_index"]))
     chosen = []
     for label in (0, 1):
-        ordered = sorted([i for i, r in enumerate(bank) if evaluation[r["path_index"]]["label"] == label],
-                         key=lambda i: (distance[i], bank[i]["path_index"]))
         diverse, remaining, seen = [], [], set()
-        for i in ordered:
-            subject = evaluation[bank[i]["path_index"]]["subject_key"]
+        for item in candidates:
+            if item[1]["label"] != label:
+                continue
+            subject = item[1]["subject"]
             if subject in seen:
-                remaining.append(i)
+                remaining.append(item)
             else:
-                diverse.append(i)
+                diverse.append(item)
                 seen.add(subject)
-        chosen += (diverse + remaining)[:per_class]
-    chosen.sort(key=lambda i: (distance[i], bank[i]["path_index"]))
-    examples = [dict(evidence=bank[i]["evidence"], observed_class="high" if evaluation[bank[i]["path_index"]]["label"] else "low")
-                for i in chosen]
-    return examples, [bank[i]["path_index"] for i in chosen]
+        chosen.extend((diverse + remaining)[:per_class])
+    chosen.sort(key=lambda item: (item[0], item[1]["path_index"]))
+    return [dict(evidence=copy.deepcopy(record["evidence"]), observed_class="high" if record["label"] else "low",
+                 retrieval_distance=distance) for distance, record in chosen], [record["path_index"] for _, record in chosen]
 
 
-def reliability_pack(scores, y, meta):
-    result = {}
-    for name, p in scores.items():
-        good = meta[np.isfinite(p[meta])]
-        if not len(good):
-            result[name] = dict(cases=0, accuracy=None, balanced_accuracy=None, brier=None)
-            continue
-        m = metrics(y[good], p[good])
-        result[name] = dict(cases=len(good), accuracy=fraction(m["acc"]),
-                            balanced_accuracy=fraction(m["bacc"]) if m["bacc"] is not None else None,
-                            brier=fraction(m["brier"]))
-    return result
+def balanced_loso_evaluation(bank, evaluation):
+    rows = []
+    for record in bank:
+        source = evaluation[record["path_index"]]
+        examples, indices = retrieve_balanced_examples(record["evidence"], bank, evaluation, query_subject=source["subject_key"])
+        high = sum(example["observed_class"] == "high" for example in examples)
+        low = len(examples) - high
+        vote = 1 if high > low else 0 if low > high else None
+        rows.append(dict(path_index=record["path_index"], heldout_subject=source["subject_key"],
+                         selected_indices=indices, high_count=high, low_count=low, vote_label=vote,
+                         correct=vote is not None and vote == source["label"]))
+    return dict(source="meta-only subject-LOSO balanced few-shot control", cases=len(rows),
+                neighbor_vote_accuracy=sum(row["correct"] for row in rows) / len(rows) if rows else None,
+                ties_are_unresolved=True, rows=rows,
+                limitation="A forced class-balanced prompt is not a neighborhood classifier; judge explanation usefulness separately")
 
 
-def local_path(value):
-    value = str(value).replace("\\", "/")
-    if sys.platform != "win32" and len(value) > 2 and value[1:3] == ":/":
-        value = "/mnt/" + value[0].lower() + "/" + value[3:]
-    return Path(value)
+def prepare_v2(cloud_out, out):
+    cloud_out, out = Path(cloud_out), Path(out)
+    if out.exists():
+        raise FileExistsError("Keep completed runs; choose a new V2 output directory")
+    source_protocol = read_json(cloud_out / "protocol.json")
+    if source_protocol.get("schema_version") != "uncertainty_agent_v2":
+        raise ValueError("V2 retrieval requires corrected V2 cloud evidence; do not reuse historical caches")
+    folds = read_json(cloud_out / "fold_evidence.json")
+    evaluation = {record["path_index"]: record for record in read_json(cloud_out / "evaluation.json")}
+    jobs, diagnostics = [], []
+    for fold in folds:
+        split = fold["split"]
+        meta_subjects = set(split["meta_calibration"])
+        if fold["outer_subject"] in meta_subjects:
+            raise ValueError("Outer subject entered reference bank")
+        bank = [dict(path_index=record["path_index"], role="meta", evidence=record["evidence"])
+                for record in fold["records"] if record["role"] == "meta"]
+        retriever = CaseRetriever(bank, evaluation, allowed_subjects=meta_subjects)
+        contexts = []
+        for record in fold["records"]:
+            if record["role"] not in ("policy_validation", "outer_test"):
+                continue
+            index, query = record["path_index"], record["evidence"]
+            subject = evaluation[index]["subject_key"]
+            expected = set(split["policy_validation"] if record["role"] == "policy_validation" else split["outer_test"])
+            if subject not in expected or subject in meta_subjects:
+                raise ValueError("Query subject partition mismatch")
+            result = retriever(query, query_subject=subject)
+            balanced, balanced_indices = retrieve_balanced_examples(query, bank, evaluation, query_subject=subject)
+            control_quality = dict(mode="balanced_few_shot_control", reliable=False, status="control_without_reliability_claim",
+                high_count=sum(example["observed_class"] == "high" for example in balanced),
+                low_count=sum(example["observed_class"] == "low" for example in balanced),
+                distinct_subject_count=len({evaluation[i]["subject_key"] for i in balanced_indices}),
+                distances=[example["retrieval_distance"] for example in balanced], class_counts_are_not_calibrated_probabilities=True)
+            for mode, examples, indices, quality in (
+                ("case_rag", result["examples"], result["selected_indices"], result["retrieval_quality"]),
+                ("balanced_few_shot_control", balanced, balanced_indices, control_quality)):
+                evidence = copy.deepcopy(query)
+                evidence["analysis_context"] = dict(
+                    reference_case_source="internal meta subjects only; query subject excluded", retrieval_quality=quality,
+                    guidance="Describe support, conflicts and missing measurements. Neighborhood counts are not symptom probabilities. The LLM cannot alter the deep model probability.")
+                message = message_for(evidence, examples)
+                jobs.append(dict(mode=mode, outer_subject=fold["outer_subject"], path_index=index,
+                                 subject_key=subject, role=record["role"], message=message, message_sha256=job_hash(message)))
+                contexts.append(dict(mode=mode, path_index=index, selected_example_indices=indices, retrieval_quality=quality))
+        diagnostics.append(dict(outer_subject=fold["outer_subject"], meta_subjects=sorted(meta_subjects),
+                                retrieval_calibration=retriever.calibration_audit(), top_k_loso=retriever.loso_evaluation(),
+                                balanced_control_loso=balanced_loso_evaluation(bank, evaluation), contexts=contexts))
+    keys = {(job["mode"], job["outer_subject"], job["path_index"]) for job in jobs}
+    if len(keys) != len(jobs) or not jobs:
+        raise ValueError("Duplicate or empty V2 retrieval requests")
+    sources = {str((cloud_out / name).resolve()): sha(cloud_out / name)
+               for name in ("protocol.json", "fold_evidence.json", "evaluation.json")}
+    out.mkdir(parents=True)
+    write_json(out / "analysis_plan.json", dict(schema_version="uncertainty_agent_v2", frozen_before_api=True,
+        llm_probability_modification=False, retrieval=dict(k=5, subject_cap=1, class_quota=None, fingerprint="raw deep-temporal + QC",
+            reliability="meta-only subject-LOSO distance cutoff; no cutoff when gates fail",
+            control="balanced_few_shot_control: up to 4 cases per class"),
+        comparison="Nested meta subject-LOSO coverage and neighbor votes; later compare evidence descriptions",
+        no_full_training_or_api_performed_by_preparation=True))
+    write_json(out / "protocol.json", dict(schema_version="uncertainty_agent_v2", cloud_out=str(cloud_out.resolve()),
+        created_utc=datetime.now(timezone.utc).isoformat(), total_paths=source_protocol["total_paths"], subjects=source_protocol["subjects"],
+        models=dict(gpt="gpt-6.1-sol", deepseek="deepseek-flash"), llm_role="explanation_only", numerical_models_retrained=False,
+        runtime_tools="CaseRetriever is lazy through ToolReplay; this preparation freezes an offline prompt comparison only",
+        original_sha256=sources, expected_requests=len(jobs), source_protocol=source_protocol,
+        implementation_sha256={str(path.resolve()): sha(path) for path in Path(__file__).parent.glob("*.py")},
+        system_sha256=hashlib.sha256(SYSTEM.encode()).hexdigest(),
+        outer_labels_used_for_retrieval_or_threshold_selection=False, exploratory=True))
+    write_json(out / "jobs.json", jobs)
+    write_json(out / "preparation_audit.json", dict(status="passed", requests_per_vendor=len(jobs), query_labels_absent=True,
+        retrieval_scaling_and_threshold_selection_meta_only=True, physiology_not_required_for_query_fingerprint=True,
+        diagnostics=diagnostics))
+    print(f"Prepared {len(jobs)} V2 explanation comparisons; no training or API calls made.", flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--cloud-out", type=Path, default=CLOUD)
     args = parser.parse_args()
-    if args.out.exists():
-        raise FileExistsError("Keep completed runs; choose a new output directory")
-    old_checks = read_json(Path("outputs/vrms_weights/20261008_seed2026/validation.json"))["original_sha256"]
-    protected = {str(local_path(p)): expected for p, expected in old_checks.items()}
-    for p, expected in protected.items():
-        if sha(p) != expected:
-            raise ValueError(f"An original source changed: {p}")
-    checkpoints = list((PILOT / "results/checkpoints").glob("*")) + list((CLOUD / "improvements/checkpoints").glob("*"))
-    protected.update({str(p): sha(p) for p in checkpoints if p.is_file()})
-    args.out.mkdir(parents=True)
-    write_json(args.out / "analysis_plan.json", read_json(Path(__file__).with_name("analysis_plan.json")))
-    write_json(args.out / "protocol.json", dict(created_utc=datetime.now(timezone.utc).isoformat(),
-        stage="frozen_before_new_cloud_outcomes", seed=2026, subjects=24, paths=147,
-        numerical_models_retrained=False, splits_changed=False, single_path_requests=True,
-        models=dict(gpt="gpt-6.1-sol", deepseek="deepseek-flash"),
-        interventions=["raw-feature similar meta examples", "leave-one-meta-subject-out calibration scores and reliability",
-                       "validation-selected simple fusion", "validation-selected calibration and selective publication"],
-        remaining_dependency="Frozen MIL epoch previously selected using all 5 meta subjects; calibration heads alone cross-fitted",
-        outer_labels_used_for_prompts_or_selection=False, prior_outer_results_seen=True, exploratory=True,
-        new_requests_per_vendor=1309, max_attempts_per_request=2,
-        acceptance=dict(accuracy_minimum_gain_paths=5, paired_subject_bootstrap_95ci_lower_gt0=True,
-                        bacc_must_not_decrease=True, brier_max_increase=.005,
-                        calibration_minimum_relative_brier_improvement=.10, calibration_max_lost_correct_paths=1,
-                        calibration_brier_gain_ci_lower_gt0=True,
-                        selective_minimum_coverage=.70, selective_target_accuracy=.80,
-                        api_minimum_success_rate=.99),
-        original_sha256=protected))
-    cache = PILOT / "cache"
-    paths = read_json(cache / "evaluation_manifest.json")
-    audit = read_json(cache / "dataset_audit.json")
-    folds = read_json(CLOUD / "fold_evidence.json")
-    evaluation = {r["path_index"]: r for r in read_json(CLOUD / "evaluation.json")}
-    y = np.asarray([p["label"] for p in paths])
-    groups = np.asarray([p["subject_key"] for p in paths])
-    windows = np.load(cache / "windows.npy", mmap_mode="r")[:audit["accepted_windows"]]
-    window_records = [__import__("json").loads(s) for s in (cache / "window_evidence.jsonl").read_text(encoding="utf-8").splitlines()]
-    starts = np.asarray([r["start_sample"] / 1024 for r in window_records])
-    pooled = {key: pool_features(np.load(cache / filename, mmap_mode="r"), paths) for key, filename in
-              (("bio_absolute", "bio_absolute.npy"), ("bio_reference", "bio_reference.npy"), ("covariance", "covariance.npy"))}
-    features, covariances = path_features(cache, paths, windows, audit["channel_order"])
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    torch.set_num_threads(2)
-    jobs, diagnostics = [], []
-    for fold in folds:
-        s, split = fold["outer_subject"], fold["split"]
-        base = np.flatnonzero(np.isin(groups, split["base_train"]))
-        meta = np.flatnonzero(np.isin(groups, split["meta_calibration"]))
-        meta_records = select_source_indices(fold["records"], set(split["meta_calibration"]), evaluation, "meta")
-        if s in split["meta_calibration"] or s in split["policy_validation"]:
-            raise ValueError("Outer subject leaked into internal data")
-        state = torch.load(PILOT / f"results/checkpoints/outer_subject_{s:02d}.pt", map_location=device, weights_only=True)
-        original = joblib.load(PILOT / f"results/checkpoints/outer_subject_{s:02d}.joblib")
-        cnn = CompactEEGCNN().to(device)
-        cnn.load_state_dict(state["model"])
-        cnn.eval()
-        raw, _ = base_scores(paths, windows, starts, cnn, state["mean"].to(device), state["scale"].to(device),
-                             device, original["classifiers"], pooled, meta)
-        old_scores, crossfit = {}, {}
-        for name, x in raw.items():
-            old_scores[name], crossfit[name] = head_crossfit(x, y, groups, meta, .3)
-        old_scores["full"] = np.where(np.isfinite(old_scores["full"]), old_scores["full"], old_scores["deep_temporal_bio"])
-        improved = joblib.load(CLOUD / f"improvements/checkpoints/outer_subject_{s:02d}.joblib")
-        new_scores = {}
-        for name in ("regional_spectrum", "spatial_spectrum", "tangent_covariance"):
-            x = tangent_features(covariances, base)[0] if name == "tangent_covariance" else features[name]
-            raw_probability = probabilities(improved["models"][name]["model"], x)
-            xcal = logit(raw_probability)[:, None]
-            new_scores[name], crossfit[name] = head_crossfit(xcal, y, groups, meta, .1)
-        mil_state = torch.load(CLOUD / f"improvements/checkpoints/outer_subject_{s:02d}.pt", map_location=device, weights_only=True)
-        mil = PathMILCNN().to(device)
-        mil.load_state_dict(mil_state["model"])
-        dt = mil_scores(mil, windows, paths, starts, meta, device)
-        new_scores["path_mil"], crossfit["path_mil"] = head_crossfit(dt, y, groups, meta, .1)
-        new_scores["original_full"] = old_scores["full"]
-        new_scores["candidate_mean"] = np.mean([new_scores[k] for k in
-                         ("original_full", "regional_spectrum", "spatial_spectrum", "tangent_covariance", "path_mil")], axis=0)
-        new_scores["validated_numeric"] = new_scores[improved["selected"]]
-        reliability = reliability_pack({**{k: p for k, p in old_scores.items() if k != "deep_temporal_bio"},
-                                        **{k: p for k, p in new_scores.items() if k != "original_full"}}, y, meta)
-        bank = copy.deepcopy(meta_records)
-        for record in bank:
-            i = record["path_index"]
-            record["evidence"]["probabilities"] = {k + "_probability": fraction(old_scores[k][i])
-                        for k in ("deep", "deep_temporal", "biomarker", "covariance", "full")}
-            record["evidence"]["improved_probabilities"] = {k + "_probability": fraction(p[i])
-                        for k, p in new_scores.items() if k != "original_full"}
-        baseline_examples = [dict(evidence=r["evidence"], observed_class="high" if evaluation[r["path_index"]]["label"] else "low")
-                             for r in choose_examples(fold["records"], evaluation, 2026 + s)]
-        contexts = []
-        for record in fold["records"]:
-            if record["role"] not in ("policy_validation", "outer_test"):
-                continue
-            i = record["path_index"]
-            if record["role"] == "policy_validation":
-                message = message_for(record["evidence"], baseline_examples)
-                jobs.append(dict(mode="baseline", outer_subject=s, path_index=i, role=record["role"],
-                                 subject_key=int(groups[i]), message=message, message_sha256=job_hash(message)))
-            examples, indices = retrieve_examples(record["evidence"], bank, evaluation)
-            evidence = copy.deepcopy(record["evidence"])
-            evidence["analysis_context"] = dict(
-                reliability_source="leave-one-meta-subject-out calibration, conditional on frozen encoders",
-                reference_case_source="5 internal meta subjects; query subject excluded", meta_subject_count=5,
-                model_reliability=reliability,
-                dependency_notes=["Deep and Temporal share the same original CNN", "Full is a numerical fusion, not an independent vote",
-                                  "Candidate mean and validated numeric reuse component models"],
-                limitations="Small reference set; MIL epoch used meta subjects, so encoder selection is not fully cross-fitted",
-                guidance="Compare similar labelled cases and model reliability. Cite concrete supporting and conflicting evidence in reason. Do not inflate confidence or infer missing measurements. No universal spectral or covariance direction.")
-            message = message_for(evidence, examples)
-            jobs.append(dict(mode="enhanced", outer_subject=s, path_index=i, role=record["role"], subject_key=int(groups[i]),
-                             message=message, message_sha256=job_hash(message)))
-            contexts.append(dict(path_index=i, role=record["role"], selected_example_indices=indices))
-        diagnostics.append(dict(outer_subject=s, selected_numeric=improved["selected"], meta_subjects=split["meta_calibration"],
-                                crossfit=crossfit, model_reliability=reliability, contexts=contexts))
-        print(f"prepared fold {s:02d}; requests={len(jobs)}; calibration-crossfit examples={len(bank)}", flush=True)
-        del cnn, mil
-    if len(jobs) != 1309 or sum(j["mode"] == "baseline" for j in jobs) != 581:
-        raise ValueError("Unexpected request counts")
-    for p, expected in protected.items():
-        if sha(p) != expected:
-            raise ValueError("A protected input changed")
-    write_json(args.out / "jobs.json", jobs)
-    write_json(args.out / "preparation_audit.json", dict(status="passed", requests_per_vendor=len(jobs),
-        baseline_policy_requests=581, enhanced_policy_requests=581, enhanced_outer_requests=147,
-        source_hashes_unchanged=True, query_labels_absent=True, other_test_paths_absent=True,
-        reliability_uses_meta_only=True, retrieval_scaling_uses_meta_only=True, diagnostics=diagnostics))
-    print("Preparation complete; no API calls made.", flush=True)
+    prepare_v2(args.cloud_out, args.out)
 
 
 if __name__ == "__main__":

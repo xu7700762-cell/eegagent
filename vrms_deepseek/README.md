@@ -1,17 +1,12 @@
-# Standalone DeepSeek Supervisor
+# DeepSeek explanation-only V2
 
-This release includes an independent Chat Completions adapter in `provider.py`. It preserves JSON-object mode, temperature0,700-token output limit,60-second timeout, SDK retries disabled, at most two wrapper attempts and a shared call budget. Native DeepSeek flash/pro disables thinking.
-
-Configure `EEG_API_BASE_URL`, `EEG_API_MODEL`, `EEG_API_KEY`. Environment values override the optional project `.env`; `--config-file` selects a file. No other local EEG project or application login is needed.
+Uses the same frozen V2 models, calibrated probability, lazy ToolReplay and deterministic four-state Supervisor as the Responses branch. DeepSeek supplies evidence explanations only. Configuration is explicit project EEG_API_BASE_URL/MODEL/KEY, with no Codex credentials or provider fallback.
 
 ```bash
-# Requires pilot/cloud artifacts; actual API calls:
+python -m vrms_deepseek.experiment --dry-run
+# Actual API calls, followed by cached evaluation:
 python -m vrms_deepseek.experiment --workers 4
-# Probe only:
-python -m vrms_deepseek.experiment --limit 1
-# Cached audit and evaluation:
 python -m vrms_deepseek.evaluate
-python -m unittest vrms_deepseek.test_contracts -v
 ```
 
-Default outputs: `outputs/vrms_deepseek/20261008_seed2026`. Evidence and examples match the independent GPT branch; numerical models/splits are frozen and the comparison weight is25%. Failures preserve numeric fallback. Logs exclude credentials and keep model identity, attempts, usage and latency. Adapter packaging differs from the historical local client; a changed source requires a new protocol and hashes.
+Default output: `outputs/vrms_deepseek/v2_seed2026`; --pilot-out selects frozen numerical artifacts. Missing preparation is generated from deep/QC snapshots without physiological tools. --dry-run requires no API config/request and --offline evaluates that run. GPT and DeepSeek outcomes keep exactly the same p_cal; failures do not change machine state. Logs preserve retry history and omit credentials. Do not compare refusal-subset accuracy directly with all-path accuracy.

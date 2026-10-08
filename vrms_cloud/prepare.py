@@ -1,4 +1,4 @@
-"""Reconstruct structured evidence from frozen checkpoints, without refitting."""
+"""Prepare V2 deep/QC evidence; physiological tools remain lazy at runtime."""
 import argparse
 import json
 from pathlib import Path
@@ -7,105 +7,118 @@ import joblib
 import numpy as np
 import torch
 
-from vrms_pilot.data import digest, read_csv, write_json
-from vrms_pilot.engine import temporal_features
-from vrms_pilot.experiment import DEFAULT_OUT as PILOT_OUT, pool_features
-from vrms_pilot.model import CompactEEGCNN, predict_windows
+from vrms_pilot.data import digest, write_json
+from vrms_pilot.experiment import DEFAULT_OUT as PILOT_OUT, ToolReplay
+from vrms_pilot.model import CompactEEGCNN
 
-DEFAULT_OUT = Path("outputs/vrms_cloud/20261008_seed2026")
+DEFAULT_OUT = Path("outputs/vrms_cloud/v2_seed2026")
 
 
 def rounded(value):
-    if value is None or not np.isfinite(value):
-        return None
-    return round(float(value), 4)
+    return None if value is None or not np.isfinite(value) else round(float(value), 4)
+
+
+class ReplayData:
+    """Load only V2 eligible caches and independently fitted frozen components."""
+    def __init__(self, pilot_out):
+        self.pilot_out = Path(pilot_out)
+        self.cache, self.result = self.pilot_out / "cache", self.pilot_out / "results"
+        self.audit = json.loads((self.cache / "dataset_audit.json").read_text(encoding="utf-8"))
+        if self.audit.get("schema_version") != "raw_event_eligibility_v2":
+            raise ValueError("V2 requires new raw-event-complete caches; historical checkpoints cannot be reused")
+        self.paths = json.loads((self.cache / "evaluation_manifest.json").read_text(encoding="utf-8"))
+        self.splits = json.loads((self.pilot_out / "split_manifest.json").read_text(encoding="utf-8"))
+        self.windows = np.load(self.cache / "windows.npy", mmap_mode="r")[:self.audit["accepted_windows"]]
+        rows = [json.loads(s) for s in (self.cache / "window_evidence.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.starts = np.asarray([r["start_sample"] / 1024 for r in rows])
+        self.references = np.load(self.cache / "path_references.npy", mmap_mode="r")
+        self.powers = np.load(self.cache / "path_reference_power.npy", mmap_mode="r")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.protocol = json.loads((self.result / "protocol.json").read_text(encoding="utf-8"))
+        if self.protocol.get("schema_version") != "pilot_v2":
+            raise ValueError("Expected a frozen V2 pilot protocol")
+        if len(self.paths) != self.audit["paths"] or self.audit["eligibility_sha256"] != digest(self.cache / "eligibility_audit.json"):
+            raise ValueError("Eligibility/cache manifest changed")
+        for filename, expected in self.protocol["code_sha256"].items():
+            if digest(Path("vrms_pilot") / filename) != expected:
+                raise ValueError(f"Frozen V2 source changed: {filename}")
+        for filename, expected in self.protocol["external_code_sha256"].items():
+            if digest(Path(filename)) != expected:
+                raise ValueError(f"Frozen V2 external source changed: {filename}")
+
+    def load_bundle(self, split):
+        stem = self.result / "checkpoints" / f"outer_subject_{split['outer_subject']:02d}"
+        state = torch.load(str(stem) + ".pt", map_location=self.device, weights_only=True)
+        components = joblib.load(str(stem) + ".joblib")
+        if components["split"] != split or state["training_subjects"] != split["base_train"]:
+            raise ValueError("Frozen subject split changed")
+        if "reliability" not in components:
+            raise ValueError("Missing independently fitted V2 reliability checkpoint")
+        model = CompactEEGCNN().to(self.device)
+        model.load_state_dict(state["model"])
+        model.eval()
+        return dict(cnn=model, mean=state["mean"].to(self.device), scale=state["scale"].to(self.device),
+                    **{k: v for k, v in components.items() if k != "split"})
+
+    def replay(self, path_index, bundle):
+        path = self.paths[path_index]
+        sl = slice(path["window_start"], path["window_end"])
+        return ToolReplay(path, self.windows[sl], self.starts[sl], self.references[path_index],
+                          self.powers[path_index], bundle, self.device)
+
+
+def prepare_v2(out=DEFAULT_OUT, pilot_out=PILOT_OUT):
+    out = Path(out)
+    if (out / "protocol.json").exists() or (out / "fold_evidence.json").exists():
+        raise ValueError("Preparation already exists; use a fresh V2 run directory")
+    data = ReplayData(pilot_out)
+    out.mkdir(parents=True, exist_ok=True)
+    folds = []
+    for split in data.splits:
+        bundle = data.load_bundle(split)
+        records = []
+        for i, path in enumerate(data.paths):
+            s = path["subject_key"]
+            role = "outer_test" if s == split["outer_subject"] else "meta" if s in split["meta_calibration"] else "policy_validation" if s in split["policy_validation"] else None
+            if role is None:
+                continue
+            replay = data.replay(i, bundle)
+            evidence = replay.evidence_snapshot()
+            if any(t in replay.calls for t in ("BiomarkerCalculator", "CovarianceAnalyzer", "CaseRetriever")):
+                raise AssertionError("Preparation eagerly computed an optional tool")
+            records.append(dict(path_index=i, role=role, evidence=evidence))
+        folds.append(dict(outer_subject=split["outer_subject"], split=split, records=records))
+        print(f"V2 deep/QC evidence fold {split['outer_subject']:02d}: {len(records)} records", flush=True)
+    write_json(out / "fold_evidence.json", folds)
+    write_json(out / "evaluation.json", [dict(path_index=i, subject_key=p["subject_key"], label=p["label"]) for i, p in enumerate(data.paths)])
+    protocol = dict(schema_version="uncertainty_agent_v2", total_paths=len(data.paths), subjects=data.audit["subjects"],
+        pilot_out=str(Path(pilot_out).resolve()), endpoint="whole_path_score_ge30", seed=2026,
+        probability_source="independently calibrated deep model only", llm_changes_probability=False,
+        tool_execution="ToolReplay lazy; preparation computes deep/QC/temporal descriptors only",
+        example_source="5 internal meta subjects; subject-diverse genuine Top K=5",
+        partial_run=bool(data.protocol.get("smoke", False)), exploratory=True,
+        query_labels_sent=False, raw_eeg_sent=False, source_identifiers_sent=False,
+        eligibility_sha256=data.audit["eligibility_sha256"],
+        split_manifest_sha256=digest(Path(pilot_out) / "split_manifest.json"),
+        source_artifact_sha256={name: digest(data.result / name) for name in ("path_oof.csv", "inner_predictions.csv", "protocol.json")},
+        checkpoint_sha256={p.name: digest(p) for p in sorted((data.result / "checkpoints").glob("*"))},
+        cache_artifact_sha256={name: digest(data.cache / name) for name in
+            ("windows.npy", "path_references.npy", "path_reference_power.npy", "window_evidence.jsonl",
+             "evaluation_manifest.json", "dataset_audit.json", "eligibility_audit.json")},
+        evidence_sha256=digest(out / "fold_evidence.json"), evaluation_sha256=digest(out / "evaluation.json"),
+        implementation_sha256={name: digest(Path(name)) for name in
+            ("vrms_refine/retrieval.py", "vrms_deepseek/supervisor.py", "vrms_deepseek/provider.py", "eegagent_config.py")},
+        code_sha256={p.name: digest(p) for p in Path(__file__).parent.glob("*.py")})
+    write_json(out / "protocol.json", protocol)
+    return protocol
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--pilot-out", type=Path, default=PILOT_OUT)
     args = parser.parse_args()
-    args.out.mkdir(parents=True, exist_ok=True)
-    cache, result = PILOT_OUT / "cache", PILOT_OUT / "results"
-    paths = json.loads((cache / "evaluation_manifest.json").read_text(encoding="utf-8"))
-    audit = json.loads((cache / "dataset_audit.json").read_text(encoding="utf-8"))
-    splits = json.loads((PILOT_OUT / "split_manifest.json").read_text(encoding="utf-8"))
-    inner = read_csv(result / "inner_predictions.csv")
-    outer = {int(r["path_index"]): r for r in read_csv(result / "path_oof.csv")}
-    windows = np.load(cache / "windows.npy", mmap_mode="r")[:audit["accepted_windows"]]
-    source = [json.loads(s) for s in (cache / "window_evidence.jsonl").read_text(encoding="utf-8").splitlines()]
-    times = np.asarray([r["start_sample"] / 1024 for r in source])
-    pooled = {key: pool_features(np.load(cache / name, mmap_mode="r"), paths) for key, name in
-              (("bio_absolute", "bio_absolute.npy"), ("bio_reference", "bio_reference.npy"), ("covariance", "covariance.npy"))}
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    torch.set_num_threads(2)
-    evidence_folds = []
-    for split in splits:
-        subject = split["outer_subject"]
-        state = torch.load(result / "checkpoints" / f"outer_subject_{subject:02d}.pt",
-                           map_location=device, weights_only=True)
-        components = joblib.load(result / "checkpoints" / f"outer_subject_{subject:02d}.joblib")
-        assert components["split"] == split
-        model = CompactEEGCNN().to(device)
-        model.load_state_dict(state["model"])
-        model.eval()
-        records = []
-        inner_fold = {int(r["path_index"]): r for r in inner if int(r["outer_subject"]) == subject}
-        for i, path in enumerate(paths):
-            role = ("outer_test" if path["subject_key"] == subject else "meta" if
-                    path["subject_key"] in split["meta_calibration"] else "policy_validation" if
-                    path["subject_key"] in split["policy_validation"] else None)
-            if role is None:
-                continue
-            scores = outer[i] if role == "outer_test" else inner_fold[i]
-            keys = ("deep", "deep_temporal", "biomarker", "covariance", "full")
-            probability = {}
-            for key in keys:
-                raw = scores[key + "_probability"] if role == "outer_test" else scores[key]
-                if key == "full" and not raw and role != "outer_test":
-                    raw = scores["deep_temporal_bio"]
-                probability[key + "_probability"] = rounded(float(raw)) if raw else None
-            sl = slice(path["window_start"], path["window_end"])
-            z = predict_windows(model, state["mean"].to(device), state["scale"].to(device), windows[sl], device)
-            dt = temporal_features(z, times[sl])
-            # PSD feature layout: 120 log-powers, 120 relative powers; then 120 reference log-ratios.
-            absolute = pooled["bio_absolute"][i]
-            ref = pooled["bio_reference"][i]
-            relative = absolute[120:].reshape(30, 4).mean(axis=0)
-            changes = ref[240:].reshape(30, 4).mean(axis=0) if np.isfinite(ref).all() else None
-            temporal = dict(raw_mean_probability=rounded(np.mean(1 / (1 + np.exp(-z)))),
-                            raw_probability_std=rounded(dt[1]), raw_recent_mean=rounded(dt[3]),
-                            raw_recent_slope_per_second=rounded(dt[4]), raw_last_probability=rounded(dt[5]))
-            evidence = dict(probabilities=probability, temporal=temporal,
-                            relative_band_power=[rounded(v) for v in relative],
-                            reference_log_change=None if changes is None else [rounded(v) for v in changes],
-                            covariance_distance=rounded(pooled["covariance"][i, -1]),
-                            reference_available=path["reference_available"],
-                            qc_accepted_fraction=rounded(path["accepted_windows"] / path["total_possible_windows"]))
-            records.append(dict(path_index=i, role=role, evidence=evidence))
-        evidence_folds.append(dict(outer_subject=subject, split=split, records=records))
-        print(f"evidence fold {subject:02d}: {len(records)} meta/validation/test paths", flush=True)
-    write_json(args.out / "fold_evidence.json", evidence_folds)
-    write_json(args.out / "evaluation.json", [dict(path_index=i, subject_key=p["subject_key"], label=p["label"])
-                                              for i, p in enumerate(paths)])
-    protocol = dict(status="frozen_before_cloud_evaluation", seed=2026, total_paths=147, subjects=24,
-                    endpoint="whole_path_score_ge30", outer="same 24 LOSO folds as frozen pilot",
-                    query_labels_sent=False, raw_eeg_sent=False, source_identifiers_sent=False,
-                    example_source="fold-specific 5 meta subjects; 4 examples per class when available",
-                    example_calibration_caveat="Base predictions are held out; meta heads have seen meta labels",
-                    numerical_candidates="original full, improved path models selected within the fold",
-                    llm_modes=["zero_shot", "few_shot", "improved_few_shot"],
-                    blend_weights=[0, .25, .5, .75, 1], fixed_blend_weight=.25,
-                    selection="independent 4-subject policy-validation only; ties prefer less LLM weight",
-                    threshold=.5, calls_per_mode=24, query_batch="one randomly shuffled fold batch; classify independently",
-                    failure_policy="retain all cases, report coverage, numeric fallback for combined systems",
-                    exploratory=True, prior_outer_results_previously_examined=True, pristine_external_validation=False,
-                    source_artifact_sha256={name: digest(result / name) for name in
-                                            ("path_oof.csv", "inner_predictions.csv", "protocol.json")},
-                    split_manifest_sha256=digest(PILOT_OUT / "split_manifest.json"),
-                    code_sha256={p.name: digest(p) for p in Path(__file__).parent.glob("*.py")},
-                    improvement_plan="path-level MIL loss, dropout/window normalization; low-dimensional spectral and train-reference covariance classifiers; grouped internal regularization search")
-    write_json(args.out / "protocol.json", protocol)
+    prepare_v2(args.out, args.pilot_out)
 
 
 if __name__ == "__main__":

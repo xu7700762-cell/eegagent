@@ -63,15 +63,17 @@ class Invariants(unittest.TestCase):
         def score(name):
             called.append(name)
             return .9
-        result = adaptive_policy(score, {"deep_temporal": .1})
+        result = adaptive_policy(score, reliability=dict(p_cal=.9, prediction_reliable=True,
+                                                        signal_quality_bad=False, ood=False))
         self.assertEqual(result["state"], "high")
-        self.assertEqual(called, ["deep", "deep_temporal"])
+        self.assertEqual(called, ["deep"])
 
     def test_neutral_evidence_cannot_publish_from_fusion_intercept(self):
         probabilities = {"deep": .5, "deep_temporal": .5, "biomarker": .5,
                          "covariance": .5, "deep_temporal_bio": .9, "full": .9}
         result = adaptive_policy(probabilities.get,
-                                 {"deep_temporal": .1, "deep_temporal_bio": .1, "full": .1})
+                                 {"deep_temporal": .1, "deep_temporal_bio": .1, "full": .1},
+                                 reliability=dict(p_cal=.5, prediction_reliable=False, ood=False))
         self.assertEqual(result["state"], "uncertain")
         self.assertEqual(result["consensus"]["status"], "insufficient_evidence")
 
