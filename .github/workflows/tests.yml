@@ -20,6 +20,6 @@ jobs:
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -e ".[cloud,plot]"
       - name: Run contract tests without data or API calls
-        run: python -m unittest vrms_pilot.test_invariants vrms_cloud.test_cloud vrms_cloud.test_science vrms_deepseek.test_contracts vrms_refine.test_contracts vrms_weights.test_scan tests.test_provider_config -v
+        run: python -m unittest discover -v
       - name: Check the synthetic input
         run: python examples/assess_path.py --dry-run

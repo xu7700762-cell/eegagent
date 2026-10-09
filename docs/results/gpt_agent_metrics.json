@@ -1,0 +1,250 @@
+{
+  "release_version": "0.3.0",
+  "experiment_date": "2026-10-08",
+  "paths": 146,
+  "subjects": 24,
+  "outer_folds": 24,
+  "evaluation_unit": "whole_path",
+  "labels": "end-of-path questionnaire <30 Low / >=30 High",
+  "architecture": "one GPT controller with eight numerical specialist tools and one correction fusion tool",
+  "multiple_independent_llm_agents_tested": false,
+  "gpt_model": "gpt-6.1-sol",
+  "gpt_seed": null,
+  "records": [
+    {
+      "seed": 2026,
+      "paths": 146,
+      "mil": {
+        "n": 146,
+        "correct": 89,
+        "accuracy": 0.6095890410958904,
+        "balanced_accuracy": 0.6114661654135338,
+        "macro_f1": 0.6094241329140657,
+        "sensitivity": 0.5657894736842105,
+        "specificity": 0.6571428571428571,
+        "confusion_matrix": [
+          [
+            46,
+            24
+          ],
+          [
+            33,
+            43
+          ]
+        ]
+      },
+      "numeric_fusion": {
+        "n": 146,
+        "correct": 107,
+        "accuracy": 0.7328767123287672,
+        "balanced_accuracy": 0.7321428571428572,
+        "macro_f1": 0.7322612498236705,
+        "sensitivity": 0.75,
+        "specificity": 0.7142857142857143,
+        "confusion_matrix": [
+          [
+            50,
+            20
+          ],
+          [
+            19,
+            57
+          ]
+        ]
+      },
+      "gpt": {
+        "n": 146,
+        "correct": 105,
+        "accuracy": 0.7191780821917808,
+        "balanced_accuracy": 0.7184210526315788,
+        "macro_f1": 0.7185310575069356,
+        "sensitivity": 0.7368421052631579,
+        "specificity": 0.7,
+        "confusion_matrix": [
+          [
+            49,
+            21
+          ],
+          [
+            20,
+            56
+          ]
+        ]
+      },
+      "corrected": 32,
+      "damaged": 16,
+      "correction_damage_ratio": 2.0,
+      "metric_pass": true,
+      "real_gpt_paths": 146,
+      "fallback_paths": 0,
+      "uncertain_paths": 0,
+      "api_rounds": 297,
+      "api_attempts": 306,
+      "failed_api_attempts": 9,
+      "aggregate_summary_sha256": "2886f8b26e280a31aefd11d48cf8e03a5d6182d52b900f1742e8be4fca683b72",
+      "local_artifact_directory": "outputs/vrms_agent_loso/v7_gpt_r1_20261008"
+    },
+    {
+      "seed": 2027,
+      "paths": 146,
+      "mil": {
+        "n": 146,
+        "correct": 84,
+        "accuracy": 0.5753424657534246,
+        "balanced_accuracy": 0.5768796992481203,
+        "macro_f1": 0.5752627627627627,
+        "sensitivity": 0.5394736842105263,
+        "specificity": 0.6142857142857143,
+        "confusion_matrix": [
+          [
+            43,
+            27
+          ],
+          [
+            35,
+            41
+          ]
+        ]
+      },
+      "numeric_fusion": {
+        "n": 146,
+        "correct": 101,
+        "accuracy": 0.6917808219178082,
+        "balanced_accuracy": 0.687593984962406,
+        "macro_f1": 0.686471009305655,
+        "sensitivity": 0.7894736842105263,
+        "specificity": 0.5857142857142857,
+        "confusion_matrix": [
+          [
+            41,
+            29
+          ],
+          [
+            16,
+            60
+          ]
+        ]
+      },
+      "gpt": {
+        "n": 146,
+        "correct": 101,
+        "accuracy": 0.6917808219178082,
+        "balanced_accuracy": 0.687593984962406,
+        "macro_f1": 0.686471009305655,
+        "sensitivity": 0.7894736842105263,
+        "specificity": 0.5857142857142857,
+        "confusion_matrix": [
+          [
+            41,
+            29
+          ],
+          [
+            16,
+            60
+          ]
+        ]
+      },
+      "corrected": 35,
+      "damaged": 18,
+      "correction_damage_ratio": 1.9444444444444444,
+      "metric_pass": false,
+      "real_gpt_paths": 146,
+      "fallback_paths": 0,
+      "uncertain_paths": 0,
+      "api_rounds": 295,
+      "api_attempts": 299,
+      "failed_api_attempts": 4,
+      "aggregate_summary_sha256": "119035a2d2451dd99e7130b36ff108c3e0392c0a76a9e097242b441cce7fcad9",
+      "local_artifact_directory": "outputs/vrms_agent_seed_retest/seed2027_20261008"
+    },
+    {
+      "seed": 2028,
+      "paths": 146,
+      "mil": {
+        "n": 146,
+        "correct": 88,
+        "accuracy": 0.6027397260273972,
+        "balanced_accuracy": 0.6037593984962406,
+        "macro_f1": 0.6027397260273972,
+        "sensitivity": 0.5789473684210527,
+        "specificity": 0.6285714285714286,
+        "confusion_matrix": [
+          [
+            44,
+            26
+          ],
+          [
+            32,
+            44
+          ]
+        ]
+      },
+      "numeric_fusion": {
+        "n": 146,
+        "correct": 106,
+        "accuracy": 0.726027397260274,
+        "balanced_accuracy": 0.7255639097744361,
+        "macro_f1": 0.7255639097744361,
+        "sensitivity": 0.7368421052631579,
+        "specificity": 0.7142857142857143,
+        "confusion_matrix": [
+          [
+            50,
+            20
+          ],
+          [
+            20,
+            56
+          ]
+        ]
+      },
+      "gpt": {
+        "n": 146,
+        "correct": 105,
+        "accuracy": 0.7191780821917808,
+        "balanced_accuracy": 0.7184210526315788,
+        "macro_f1": 0.7185310575069356,
+        "sensitivity": 0.7368421052631579,
+        "specificity": 0.7,
+        "confusion_matrix": [
+          [
+            49,
+            21
+          ],
+          [
+            20,
+            56
+          ]
+        ]
+      },
+      "corrected": 28,
+      "damaged": 11,
+      "correction_damage_ratio": 2.5454545454545454,
+      "metric_pass": true,
+      "real_gpt_paths": 146,
+      "fallback_paths": 0,
+      "uncertain_paths": 0,
+      "api_rounds": 295,
+      "api_attempts": 300,
+      "failed_api_attempts": 5,
+      "aggregate_summary_sha256": "95941bd0b816ed6f41fd841914b114b74202fb1a66d7ca616aea3aa29b4c0449",
+      "local_artifact_directory": "outputs/vrms_agent_seed_retest/seed2028_20261008"
+    }
+  ],
+  "gpt_accuracy_mean": 0.7100456621004566,
+  "gpt_accuracy_sample_sd": 0.015817815594236322,
+  "metric_target": {
+    "accuracy_at_least": 0.7,
+    "correction_damage_ratio_at_least": 2
+  },
+  "production_four_state_supervisor_preserved": true,
+  "limitations": [
+    "Exploratory repeated development on the same dataset",
+    "Auxiliary tools fit19 internal subjects versus14 for MIL",
+    "No extra GPT accuracy gain established versus numerical fusion",
+    "Pretraining overlap not excluded",
+    "Training seed does not control GPT sampling",
+    "Forced binary accuracy does not establish reliable selective publication"
+  ],
+  "source_three_seed_comparison_sha256": "ed5b7c560fa7abedfff29b67ff84c6c9deda9a27de983b4afc423254aa66773a"
+}

@@ -2,6 +2,8 @@
 
 `data.py` audits real CEO/Trigger task boundaries before cache allocation, preserving excluded candidates. `model.py` trains the compact CNN from scratch. `reliability.py` fits independent Platt calibration and empirical policy gates. `engine.py` and `experiment.py` perform four-state decisions and lazy evidence acquisition.
 
+The independent V3 experiment uses `reliability_v3.py`, `engine_v3.py`, and `reliability_experiment_v3.py` while preserving the frozen V2 sources. It cross-fits five meta-subject heads, separates policy selection from auditing and technical QC from coverage warnings. `model_ablation_v3.py` compares frozen CNN/FEMBA with path-level attention MIL. See [V3 protocol and actual results](../docs/RELIABILITY_V3.md). No cloud API or RAG expansion is involved, and no unvalidated V3 gate replaces the Cloud default.
+
 Every outer LOSO fold keeps14 base /5 meta /4 policy /1 test subjects. Meta is split into3 head-fit and2 probability-calibration subjects. OOD reference descriptors fit base signals only; uncertainty/OOD/QC-fraction cutoffs are selected only on independent policy subjects. Missing/failed validation abstains. Adaptive probability stays p_cal regardless of cases, auxiliary probabilities or LLM explanations.
 
 ```bash

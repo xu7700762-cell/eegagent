@@ -1,8 +1,24 @@
-# EEGAgent Core — V2
+# EEGAgent — GPT 工具协作版 v0.3.0
 
 面向 EEG 与虚拟现实不适研究的 Uncertainty-Aware EEG Agent。主要终点仍是**整条路径问卷评分 `<30` / `>=30`**；5 秒窗口继承路径弱标签。
 
+最新实测：GPT 工具协作流程在 **146 条完整路径、24 折 LOSO** 上达到 **ACC 71.92%（105/146）**。协作由 GPT 主控、冻结 FEMBA＋MIL、相似案例检索、频谱/协方差/CSP 专家工具和内部验证/纠正融合模块完成。这里是**一个 GPT 主控协调多个数值专家工具**，不是多个独立 LLM 对话投票。代码、调用关系、复现入口及结果边界见 [GPT 与专家模块协作](docs/GPT_MULTI_AGENT.md)。
+
+| 训练 Seed | FEMBA＋MIL ACC | 纯数值融合 ACC | 真实 GPT ACC | 纠正 / 误改 | 达到双标准 |
+|---|---:|---:|---:|---:|:---:|
+| 2026 | 60.96%（89/146） | 73.29%（107/146） | **71.92%（105/146）** | 32 / 16 | 是 |
+| 2027 | 57.53%（84/146） | 69.18%（101/146） | 69.18%（101/146） | 35 / 18 | 否 |
+| 2028 | 60.27%（88/146） | 72.60%（106/146） | **71.92%（105/146）** | 28 / 11 | 是 |
+
+纠正/误改相对各自 seed 的 MIL；双标准为 ACC≥70% 且纠正数≥2×误改数。三个 seed 的 GPT 平均 ACC=71.00%，样本标准差=1.58 个百分点。训练 seed 不固定 GPT 采样；全部保留，未挑选最好的一次。纯数值融合在两次运行中高于 GPT，因此这些结果尚未证明 LLM 带来额外准确率收益。可核对的聚合指标与源产物哈希见 [结果摘要](docs/results/gpt_agent_metrics.json)。
+
 V2 由深度模型输出校准概率 `p_cal`，Supervisor 根据内部验证得到的可靠性门槛决定工具调用和拒判。LLM 返回支持、冲突、缺失证据及解释，不能输出或修改分类概率。
+
+新增独立的 [Reliability V3 与模型对照](docs/RELIABILITY_V3.md)：冻结 V2 CNN 和外层 LOSO，使用 5 名 meta 的被试 OOF 校准、独立 policy 选择/审核、QC 分离及真实 Risk–Coverage；对比冻结 CNN/FEMBA＋整路径 MIL。本轮不调用 GPT、不增加 RAG、不放宽阈值。实际 V3 尚无通过审核的发布门槛；实验源码和输出与 V2 分开保存。
+
+用户追加的 [FEMBA＋GPT 二次分类实验](docs/GPT_SECOND_JUDGMENT.md) 单独运行：真实 GPT 在同 146 条 LOSO 路径上强制 high/low，ACC 为 63.01%（92/146），原 FEMBA＋MIL 为 60.96%（89/146）。纠正 15 条、误改 12 条；同案例多数投票也为 63.01%，尚不能证明稳定的 GPT 增益。此实验不改变生产 Supervisor 的概率或可靠性门控。
+
+继续开展的 [真实工具 Agent 迭代](docs/TOOL_AGENT_ITERATIONS.md) 保持原 FEMBA＋MIL 60.96% 基线：第四轮 GPT 实际调用 EEG 工具后，最终 High/Low 的 ACC 为 **71.92%（105/146）**，纠正32条、误改16条，达到用户指定的≥70%和≥2:1标准。辅助工具使用19名内部被试，融合学习器还使用独立policy预测；同工具纯数值融合为73.29%，尚未证明GPT额外提高准确率。该结果是持续开发中的探索性LOSO，原生产四状态门控继续独立保留。
 
 ```mermaid
 flowchart TD
@@ -37,7 +53,7 @@ python -m venv .venv
 # Linux / macOS: source .venv/bin/activate
 # Windows: .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[cloud,plot]"
-python -m unittest tests.test_provider_config vrms_pilot.test_invariants vrms_pilot.test_reliability vrms_pilot.test_eligibility vrms_cloud.test_cloud vrms_cloud.test_science vrms_cloud.test_pipeline_v2 vrms_deepseek.test_contracts vrms_refine.test_contracts vrms_refine.test_retrieval vrms_weights.test_scan -v
+python -m unittest discover -v
 python -m examples.assess_path --dry-run
 ```
 
@@ -92,4 +108,4 @@ python -m vrms_refine.run --vendor deepseek --workers 4
 
 V1 源码可在提交 `205abc7` 中查看；`source_snapshot.json`、`release_manifest.json` 属于该版本的发布记录。V1 历史结果包含截断候选且数据被反复查看，不构成 V2 或稳定 LLM 增益的证据。`vrms_weights` 和旧 `improve.py` 是历史诊断，不属于 V2 的概率决策流程。
 
-本次修改未启动正式训练或真实 API 请求。146 路径资格审计是实际数据证据；合成测试、契约测试不能替代新模型训练、真实检索 LOSO 结果、临床验证或树莓派测量。生理方向性尚未验证，V2 可以继续拒判。
+V2最初代码修改仅完成资格审计和契约测试；其后的Reliability V3、模型对照及GPT实验已有单独的真实训练/推理记录，具体结果见各实验报告。合成测试、契约测试不能替代性能评价、临床验证或树莓派测量。生理方向性尚未验证，生产V2继续按门控允许拒判。
