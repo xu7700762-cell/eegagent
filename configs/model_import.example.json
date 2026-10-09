@@ -1,0 +1,16 @@
+{
+  "seed": 2026,
+  "encoder": "/path/to/existing_encoder.ckpt",
+  "string_aliases": {},
+  "module_aliases": {},
+  "folds": {
+    "1": {
+      "head": "/path/to/existing_head.pt",
+      "normalization": "/path/to/existing_normalization.pt",
+      "first": "/path/to/existing_first.joblib",
+      "second": "/path/to/existing_second.joblib",
+      "selector": "/path/to/existing_selector.joblib",
+      "nested_audit": "/path/to/existing_nested_audit.json"
+    }
+  }
+}

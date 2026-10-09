@@ -1,0 +1,23 @@
+/* Shared research-workspace tokens. No global element rules: the monitor keeps its layout. */
+:root {
+  --research-bg: #F3F6FA;
+  --research-surface: #FFFFFF;
+  --research-ink: #182A44;
+  --research-muted: #52647B;
+  --research-blue: #175CD3;
+  --research-blue-hover: #124DAE;
+  --research-teal: #007C83;
+  --research-blue-soft: #EDF4FF;
+  --research-teal-soft: #EAF6F6;
+  --research-line: #DCE4EF;
+  --research-control-line: #8191A8;
+  --research-warning: #8A4B08;
+  --research-warning-soft: #FFF4E6;
+  --research-error: #B42318;
+  --research-error-soft: #FFF0ED;
+  --research-radius: 8px;
+  --research-font: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
+  --research-mono: "Cascadia Code", Consolas, monospace;
+  --research-shadow: 0 12px 40px #182A441A;
+  --research-focus: 0 0 0 3px #175CD326;
+}

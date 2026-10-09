@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#F3F6FA">
+  <title>EEGAgent · EEG 科研工作台</title>
+  <link rel="stylesheet" href="/assets/design-tokens.css">
+  <link rel="stylesheet" href="/assets/brain.css">
+</head>
+<body>
+<svg aria-hidden="true" class="icon-definitions" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
+  <symbol id="i-brain" viewBox="0 0 24 24"><path d="M12 5c-1-3-6-2-6 1-3 0-4 4-2 6-2 3 0 6 3 6 0 3 5 4 5 1V5Zm0 0c1-3 6-2 6 1 3 0 4 4 2 6 2 3 0 6-3 6 0 3-5 4-5 1V5Z"/><path d="M6 6c0 2 1 3 3 3M4 12h3l2 2M7 18l1-2M18 6c0 2-1 3-3 3M20 12h-3l-2 2M17 18l-1-2"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 1-8 8H4v-7a8 8 0 1 1 16-1Z"/><path d="M8 10h8M8 14h5"/></symbol>
+  <symbol id="i-tool" viewBox="0 0 24 24"><path d="m14 5 5 5M9 7 4 12l8 8 5-5M14 3l7 7-4 4-7-7 4-4Z"/><path d="m7 15 2-2M10 18l2-2"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path d="M12 5c-3-2-6-2-9-1v15c3-1 6-1 9 1 3-2 6-2 9-1V4c-3-1-6-1-9 1v15Z"/><path d="M6 8h3M15 8h3M6 12h3M15 12h3"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></symbol>
+  <symbol id="i-trace" viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="5" rx="1"/><rect x="2" y="17" width="7" height="5" rx="1"/><rect x="15" y="17" width="7" height="5" rx="1"/><path d="M12 7v6H5v4m7-4h7v4"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="m10 8 4-4a4 4 0 0 1 6 6l-4 4M14 16l-4 4a4 4 0 0 1-6-6l4-4m0 6 8-8"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></symbol>
+
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 3v17h17M8 15v-4m5 4V7m5 8V4"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="18" r="2"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 8a8 8 0 1 0 0 8M20 3v5h-5"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></symbol>
+</defs></svg>
+
+<a class="skip-link" href="#question">跳到提问框</a>
+<div class="app-shell" id="appShell">
+  <button id="panelBackdrop" class="panel-backdrop" type="button" aria-label="关闭展开的面板" tabindex="-1"></button>
+  <aside class="sidebar" aria-label="工作台导航">
+    <div class="sidebar-brand-row"><a class="brand" href="/#conversation"><span class="brand-mark"><svg aria-hidden="true" class="icon"><use href="#i-brain"/></svg></span><span>BrainAgent<small>EEG 科研工作台</small></span></a><button id="closeMenu" class="icon-button menu-close" aria-label="关闭导航"><svg aria-hidden="true" class="icon"><use href="#i-close"/></svg></button></div>
+    <button id="newConversation" class="new-conversation"><svg aria-hidden="true" class="icon"><use href="#i-plus"/></svg><span class="nav-label">新建对话</span></button>
+    <nav class="primary-nav" aria-label="研究工作区">
+      <button class="nav-item active" data-page="conversation" aria-current="page"><svg aria-hidden="true" class="icon"><use href="#i-chat"/></svg><span class="nav-label">协作对话</span></button>
+      <button class="nav-item" data-page="evaluation"><svg aria-hidden="true" class="icon"><use href="#i-chart"/></svg><span class="nav-label">实验评价</span></button>
+      <button class="nav-item" data-page="toolkits"><svg aria-hidden="true" class="icon"><use href="#i-tool"/></svg><span class="nav-label">领域工具包</span><span class="nav-count">3</span></button>
+      <button class="nav-item" data-page="knowledge"><svg aria-hidden="true" class="icon"><use href="#i-book"/></svg><span class="nav-label">分层知识库</span></button>
+      <a class="nav-item" href="/settings"><svg aria-hidden="true" class="icon"><use href="#i-settings"/></svg><span class="nav-label">接口配置</span></a>
+    </nav>
+    <section class="history-section"><div class="section-label"><span>最近对话</span><button id="refreshHistory" class="icon-button" aria-label="刷新对话历史"><svg aria-hidden="true" class="icon"><use href="#i-refresh"/></svg></button></div><div id="history" class="history-list"><p class="sidebar-empty">暂无对话，点击上方新建。</p></div></section>
+    <section class="team-section"><div class="section-label">协作团队</div><div id="sidebarAgents" class="sidebar-agents"></div></section>
+    <div class="sidebar-bottom"><a href="/settings" class="settings-link"><svg aria-hidden="true" class="icon"><use href="#i-settings"/></svg><span>API 与模型配置</span><svg aria-hidden="true" class="icon nav-external"><use href="#i-arrow"/></svg></a><div class="local-note"><span class="status-dot"></span><span>本地工具 · 可追溯证据</span></div><span class="version">研究原型</span></div>
+  </aside>
+  <main class="main-shell">
+    <header class="topbar"><div class="topbar-title"><button id="menuButton" class="icon-button menu-button" aria-label="展开导航" aria-expanded="false"><svg aria-hidden="true" class="icon"><use href="#i-menu"/></svg></button><span class="workspace-label">EEG 科研工作台</span><span class="topbar-divider">/</span><span id="pageTitle">协作对话</span></div><div class="topbar-controls"><span id="backendBadge" class="badge api"><span class="status-dot"></span>真实 API · 等待生成</span><button id="traceToggle" class="trace-toggle" aria-label="查看协作过程" aria-expanded="false" aria-controls="inspector"><svg aria-hidden="true" class="icon"><use href="#i-trace"/></svg><span>协作过程</span></button></div></header>
+    <div id="globalError" class="global-error" role="alert" hidden></div>
+    <div class="cloud-summary" aria-label="云端模型与连接状态">
+      <label class="cloud-provider-label" for="cloudProvider">云端模型<select id="cloudProvider" aria-label="切换云端模型配置"><option value="cpa_gpt">CPA GPT</option></select></label>
+      <div class="cloud-model-status"><strong id="cloudModelSummary">读取模型配置…</strong><span id="cloudConnectionSummary" role="status">读取配置状态…</span></div>
+      <div class="cloud-summary-actions"><a href="/settings">API 配置</a><button type="button" id="refreshCloudConfig" class="icon-button" aria-label="刷新模型配置" title="刷新配置"><svg aria-hidden="true" class="icon"><use href="#i-refresh"/></svg></button></div>
+    </div>
+    <nav class="workspace-tabs" aria-label="工作区快捷导航"><button class="nav-item active" data-page="conversation" aria-current="page">对话</button><button class="nav-item" data-page="evaluation">实验评价</button><button class="nav-item" data-page="toolkits">工具包</button><button class="nav-item" data-page="knowledge">知识库</button></nav>
+    <section id="conversation" class="page conversation-page">
+      <div class="chat-column">
+        <div class="conversation-header"><div><span class="micro-label">Supervisor 协作对话</span><h1 id="conversationTitle">新对话</h1></div><div class="conversation-actions"><span id="conversationState" class="state-label"><span class="status-dot"></span>就绪</span><button id="downloadReport" class="icon-button" aria-label="下载当前报告" title="下载 Markdown 报告" disabled><svg aria-hidden="true" class="icon"><use href="#i-download"/></svg></button></div></div>
+        <details id="researchSettings" class="research-settings">
+          <summary><svg aria-hidden="true" class="icon"><use href="#i-settings"/></svg><strong>研究参数</strong><span id="parameterSummary">3 个领域 · 知识问答</span><svg aria-hidden="true" class="icon summary-chevron"><use href="#i-chevron"/></svg></summary>
+          <div class="research-settings-body">
+            <input id="researchSeed" type="hidden" value="2026">
+            <div class="research-fields"><label for="recordingSource" class="research-path">原始 EEG 文件（可选）<select id="recordingSource"><option value="">在对话中指定被试或文件</option></select></label><label for="backend">语言响应<select id="backend" aria-label="语言响应后端"><option value="api" selected>真实 API</option><option value="mock">mock · 调试</option></select></label><input id="vrmsPath" type="hidden" value=""></div>
+            <div class="raw-file-actions"><button id="uploadEdfButton" type="button">上传原始 EDF</button><input id="edfFile" type="file" accept=".edf" hidden><span id="recordingFeedback" role="status">直接输入“分析被试 10”即可自动定位原始文件。</span></div>
+            <div class="research-domain-row"><button type="button" id="scopeButton" class="scope-button" aria-expanded="false" aria-controls="scopePanel"><svg aria-hidden="true" class="icon"><use href="#i-trace"/></svg><span id="scopeLabel">3 个领域</span><svg aria-hidden="true" class="icon"><use href="#i-chevron"/></svg></button><span id="vrmsPipelineBadge" class="subtle-badge">VRMS 模型</span><a href="#evaluation">查看实验评价</a></div>
+            <fieldset id="scopePanel" class="scope-panel" hidden><legend>选择协作领域</legend><label><input type="checkbox" name="domain" value="vrms" checked>VRMSAgent <small>VR 晕动症</small></label><label><input type="checkbox" name="domain" value="fatigue" checked>FatigueAgent <small>疲劳</small></label><label><input type="checkbox" name="domain" value="emotion" checked>EmotionAgent <small>情绪</small></label><p>手动选择默认领域；问题中的明确领域要求会调整本轮协作范围。</p></fieldset>
+            <p id="vrmsPipelineNote" class="vrms-pipeline-note">正在读取原始 EEG 与 GPT 工具 Agent 状态…</p>
+            <details id="vrmsBoundaryPanel" class="vrms-boundary"><summary>推理范围与研究边界</summary><div id="vrmsBoundaryText"></div></details>
+            <input id="taskEvidence" type="hidden" value="">
+            <div id="sessionContext" class="session-context"></div>
+          </div>
+        </details>
+        <div id="sessionModeNotice" class="session-mode-notice" hidden><span>此历史对话使用 mock 模拟响应。</span><button id="newRealConversation" type="button">新建真实 API 对话</button></div>
+        <div class="chat-scroll" id="chatScroll" tabindex="0" aria-label="对话内容，可滚动阅读">
+          <div class="welcome" id="welcome"><div class="welcome-logo"><svg aria-hidden="true" class="icon"><use href="#i-brain"/></svg></div><h2>直接向原始 EEG 提问</h2><p>在对话中指定被试或上传的 EDF 文件，<br>比较路径之间、休息段之间的指标，三个 Agent 协作给出具体结果。</p><div class="welcome-domains"><span><i class="domain-dot vrms"></i>VR 晕动症</span><span><i class="domain-dot fatigue"></i>疲劳指标</span><span><i class="domain-dot emotion"></i>心理负荷</span></div><div class="suggestions"><button class="suggestion" data-prompt="请让三个 Agent 分析被试 10 的原始 EEG：完成多少条路径？第一条与最后一条完整路径的疲劳和心理负荷指标是上升还是下降，哪条路径最高？VRMS 将哪些路径判为高类，首条高类路径的起止时间是什么？"><svg aria-hidden="true" class="icon"><use href="#i-trace"/></svg><div><strong>分析被试 10</strong><span>路径间疲劳、心理负荷变化与高类时间位置</span></div><svg aria-hidden="true" class="icon suggestion-arrow"><use href="#i-arrow"/></svg></button><button class="suggestion" data-prompt="请分析被试 10 的原始 EEG，休息段按 mark22→下一次 mark20 划分；分别比较首末完整路径、首末完整休息段的疲劳和心理负荷指标，给出数值变化和时间。"><svg aria-hidden="true" class="icon"><use href="#i-trace"/></svg><div><strong>查看路径和休息变化</strong><span>路径与休息状态各自独立比较</span></div><svg aria-hidden="true" class="icon suggestion-arrow"><use href="#i-arrow"/></svg></button><button class="suggestion" data-prompt="请说明原始 EEG 的疲劳相关指标、心理负荷指标和 VRMS 整路径模型分别如何计算，给出方法来源。"><svg aria-hidden="true" class="icon"><use href="#i-book"/></svg><div><strong>检索工具与方法</strong><span>共享协议与各领域计算依据</span></div><svg aria-hidden="true" class="icon suggestion-arrow"><use href="#i-arrow"/></svg></button></div></div>
+          <div id="messages" class="message-list" aria-live="polite" aria-relevant="additions"></div>
+          <div id="working" class="working" hidden><span class="working-avatar">S</span><span class="working-dots"><i></i><i></i><i></i></span><span id="workingText">Supervisor 正在组织协作…</span></div>
+        </div>
+        <div class="composer-area"><form id="questionForm" class="composer"><label for="question">向 Supervisor 提问</label><div class="composer-input-row"><textarea id="question" placeholder="例如：比较被试 10 各路径及休息段的疲劳、心理负荷，定位首条高类路径…" rows="2" maxlength="2000"></textarea><button id="sendQuestion" class="send-button" type="submit" aria-label="发送问题" disabled><svg aria-hidden="true" class="icon"><use href="#i-send"/></svg><span>发送</span></button></div></form><div class="composer-footnote"><span id="backendNote">Supervisor 将基于原始波形工具和方法资料生成回答。</span><span class="keyboard-hint">Enter 发送 · Shift + Enter 换行</span></div></div>
+      </div>
+      <aside class="inspector" id="inspector" aria-label="多 Agent 协作证据"><div class="inspector-heading"><div><span class="micro-label">执行证据</span><h2>协作工作流</h2></div><div class="inspector-heading-actions"><span id="traceCount" class="count-badge" title="过程记录数量">0</span><button id="closeInspector" class="icon-button inspector-close" type="button" aria-label="关闭协作过程"><svg aria-hidden="true" class="icon"><use href="#i-close"/></svg></button></div></div><div class="workflow"><div class="flow-node supervisor-node" id="planNode"><span class="node-icon">S</span><div><strong>Supervisor</strong><small id="planDescription">理解问题 · 制定协作计划</small></div><span id="planStatus" class="node-status">待命</span></div><div class="flow-connector split-connector"><span>领域分派 · 并行工具调用</span></div><div id="agentNodes" class="agent-nodes"></div><div class="flow-connector"><span>测量结果 + 检索请求</span></div><div id="ragNode" class="rag-node"><div class="rag-title"><svg aria-hidden="true" class="icon"><use href="#i-book"/></svg><strong>分层 RAG</strong><span id="ragStatus" class="node-status">待检索</span></div><div class="knowledge-layers"><span><b>L1</b>共享知识库</span><i>↓</i><span><b>L2</b>领域知识库</span></div><small id="ragDescription">共享方法与协议 → 各领域专业证据</small></div><div class="flow-connector"><span>子报告 · 引用 · 证据缺口</span></div><div class="flow-node final-node" id="synthesisNode"><span class="node-icon">S</span><div><strong>Supervisor 综合回答</strong><small id="synthesisDescription">比较结论，保留各领域证据边界</small></div><span id="synthesisStatus" class="node-status">待汇总</span></div></div><div class="inspector-tabs" role="tablist" aria-label="执行证据类型"><button class="inspector-tab active" id="tabActivity" data-tab="activity" role="tab" aria-controls="activityPanel" aria-selected="true">过程<span id="activityCount">0</span></button><button class="inspector-tab" id="tabTools" data-tab="tools" role="tab" aria-controls="toolsPanel" aria-selected="false">工具结果<span id="toolsCount">0</span></button><button class="inspector-tab" id="tabCitations" data-tab="citations" role="tab" aria-controls="citationsPanel" aria-selected="false">引用<span id="citationsCount">0</span></button></div><div class="inspector-content"><div id="activityPanel" class="inspector-panel" role="tabpanel" aria-labelledby="tabActivity"><div class="panel-empty"><svg aria-hidden="true" class="icon"><use href="#i-trace"/></svg><strong>过程将在这里展开</strong><span>发送问题后，查看每个 Agent 的调用与汇总。</span></div></div><div id="toolsPanel" class="inspector-panel" role="tabpanel" aria-labelledby="tabTools" hidden><div class="panel-empty"><svg aria-hidden="true" class="icon"><use href="#i-tool"/></svg><strong>等待本地工具结果</strong><span>没有 EEG 数据时，数值测量会明确返回证据不足。</span></div></div><div id="citationsPanel" class="inspector-panel" role="tabpanel" aria-labelledby="tabCitations" hidden><div class="panel-empty"><svg aria-hidden="true" class="icon"><use href="#i-book"/></svg><strong>等待检索来源</strong><span>共享库与专业库的引用会分别标注。</span></div></div></div><div class="inspector-footer"><span class="status-dot"></span>可见调用记录与引用 · 支持多轮追问</div></aside>
+
+    </section>
+    <section id="evaluation" class="page content-page evaluation-page" hidden>
+      <div class="content-heading"><h1>实验评价</h1><p>在同一批原始 EEG 路径上评价 VRMSModel 与真实 GPT，保留全部路径分母和调用覆盖率。</p></div>
+      <div class="evaluation-layout">
+        <article class="evaluation-setup"><h2>评价设置</h2><input id="vrmsSeed" type="hidden" value="2026"><div id="evaluationConfig" class="evaluation-config">读取研究管线…</div><div class="evaluation-actions"><button id="runVrmsEvaluation" type="button" class="primary-button">运行全部路径并计算 ACC</button><button id="resumeVrmsEvaluation" type="button" hidden>继续未成功路径</button><button id="refreshVrmsEvaluations" type="button"><svg aria-hidden="true" class="icon"><use href="#i-refresh"/></svg>刷新评价记录</button></div><p class="evaluation-note">运行会实际调用当前云端模型并产生 API 用量；续跑沿用原记录配置，仅处理未成功的路径。</p></article>
+        <div class="evaluation-results">
+          <article id="vrmsEvaluationPanel" class="vrms-evaluation"><div class="card-title"><h2 id="evaluationResultTitle">网页评价记录</h2><span id="evaluationPhase" class="subtle-badge">等待读取</span></div><label for="vrmsEvaluationHistory">选择已保存的评价<select id="vrmsEvaluationHistory"><option value="">暂无评价任务</option></select></label><div id="vrmsEvaluationStatus" role="status">等待运行或读取已有评价。</div><progress id="vrmsEvaluationProgress" value="0" max="146" hidden aria-label="全部路径评价进度"></progress><div id="evaluationRecordMeta" class="evaluation-record-meta"></div><div id="vrmsEvaluationMetrics"></div></article>
+          <article class="historical-evaluation"><div class="card-title"><h2>当前 seed2026 已审计结果</h2><span class="subtle-badge">当前原始 EEG 协议</span></div><p id="vrmsHistoricalSummary" class="vrms-historical-summary" hidden></p><div id="vrmsHistoricalMetrics"><p class="muted">当前结果待读取。</p></div><p class="evaluation-note">已审计结果为当前原始 EEG 的完整评测；新评价按其实际 GPT 返回单独统计。</p></article>
+        </div>
+      </div>
+    </section>
+    <section id="toolkits" class="page content-page" hidden><div class="content-heading"><h1>领域工具包</h1><p>查看各 Agent 的分析模式、EEG 工具与证据来源，由 Supervisor 统一调度。</p></div><div id="toolkitCards" class="toolkit-grid"></div><div class="info-strip"><svg aria-hidden="true" class="icon"><use href="#i-link"/></svg><p>在对话框提及被试即可关联原始 EEG，也可在研究参数中选择文件或上传 EDF。VRMSAgent 调用 VRMSModel 和 EEG 证据工具；疲劳和情感 Agent 只运行 EEG 测量工具。问卷和真实标签仅用于独立事后评价。<a href="/settings">接口配置</a>用于设置本项目的 GPT 连接。</p></div></section>
+    <section id="knowledge" class="page content-page" hidden><div class="content-heading"><h1>分层知识库</h1><p>先查询共享方法与分析协议，再进入领域知识库，保留来源与检索层级。</p></div><div id="knowledgeCards" class="knowledge-grid"></div><p id="retrievalMethod" class="retrieval-method">检索机制待读取。</p><article class="knowledge-search-card"><div class="card-title"><h2>分层检索</h2><span class="subtle-badge">共享 + 所选领域</span></div><form id="knowledgeSearchForm" class="knowledge-search-form"><svg aria-hidden="true" class="icon"><use href="#i-book"/></svg><label class="sr-only" for="knowledgeQuery">搜索知识库</label><input id="knowledgeQuery" placeholder="例如：疲劳 EEG 频谱特征、情绪模型的评价边界" maxlength="2000" required><button type="submit" id="knowledgeSearchButton">检索资料</button></form><div class="search-domain-options"><label><input type="checkbox" name="searchDomain" value="vrms" checked>VR 晕动症</label><label><input type="checkbox" name="searchDomain" value="fatigue" checked>疲劳</label><label><input type="checkbox" name="searchDomain" value="emotion" checked>情绪</label></div><div id="knowledgeStages" class="search-stages"></div><div id="knowledgeResults" class="knowledge-results"><p class="muted">输入关键词检索资料，结果将标明知识库层级、文献来源和匹配片段。</p></div></article><details class="knowledge-import-card"><summary><div><h2>添加知识资料</h2><span>将有来源的文本录入共享库或领域库</span></div><svg aria-hidden="true" class="icon summary-plus"><use href="#i-plus"/></svg></summary><form id="knowledgeImportForm"><div class="import-grid"><label>目标知识库<select id="importDomain"><option value="shared">共享知识库</option><option value="vrms">VR 晕动症知识库</option><option value="fatigue">疲劳知识库</option><option value="emotion">情绪知识库</option></select></label><label>资料标题<input id="importTitle" placeholder="文章、协议或技术资料标题" maxlength="200" required></label><label class="wide">来源<input id="importSource" placeholder="原文 URL、文献名或本地来源说明" maxlength="1000" required></label><label>DOI（可选）<input id="importDoi" placeholder="10.xxxx/xxxxx" maxlength="200"></label><label>页码（可选）<input id="importPage" placeholder="例如：4–6" maxlength="100"></label><label class="wide">知识文本<textarea id="importText" rows="7" placeholder="粘贴需索引的原文或有明确依据的知识条目" maxlength="80000" required></textarea></label></div><div class="import-actions"><p>录入后进入本地索引，可用于后续检索和对话引用。</p><button id="importButton" type="submit" class="primary-button">录入并索引</button></div><p id="importFeedback" role="status"></p></form></details></section>
+
+  </main>
+</div>
+<script src="/assets/brain.js"></script>
+</body>
+</html>

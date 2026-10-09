@@ -1,0 +1,38 @@
+{
+  "status": "passed",
+  "frozen_model_equivalence": {
+    "folds": 24,
+    "publishable_raw_paths": 148,
+    "fresh_encoded_windows": 3820,
+    "max_absolute_score_difference": 0.0,
+    "tolerance": 1e-07,
+    "same_model_classes": true,
+    "same_tool_evidence": true,
+    "fitting_calls": 0
+  },
+  "private_converted_manifest_sha256": "2d3924314b8fc6caeed6ceb6a0bd5f49f174c3f1bed32c8dbf0ec69e1e81de84",
+  "full_gpt_rerun_after_packaging": false,
+  "current_prepare": {
+    "status": "passed",
+    "paths": 146,
+    "subjects": 24,
+    "baseline_policy": "disabled",
+    "excluded_candidates": 1
+  },
+  "live_smoke": {
+    "three_specialist_generation": "cloud_verified",
+    "gpt_final_path_decisions": 2,
+    "first_supervisor_synthesis": "APIConnectionError; correctly marked local fallback",
+    "browser_console_errors": 0,
+    "evaluation_table": "108/146 and 94/146 visible",
+    "supervisor_failed_only_retry": "cloud_verified",
+    "retry_scope": "Supervisor synthesis only; no replay or replacement of path decisions"
+  },
+  "engineering_checks": {
+    "python_tests": 109,
+    "web_tests": 2,
+    "python_version": "3.10.20",
+    "editable_install": "passed",
+    "new_full_gpt_evaluation": false
+  }
+}

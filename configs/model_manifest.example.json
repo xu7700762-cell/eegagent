@@ -1,0 +1,15 @@
+{
+  "seed": 2026,
+  "baseline_policy": "disabled",
+  "encoder": {"file": "encoder.pt", "sha256": "REPLACE_WITH_SHA256"},
+  "folds": {
+    "1": {
+      "head": {"file": "fold_01_head.pt", "sha256": "REPLACE_WITH_SHA256"},
+      "normalization": {"file": "fold_01_normalization.pt", "sha256": "REPLACE_WITH_SHA256"},
+      "first": {"file": "fold_01_first.joblib", "sha256": "REPLACE_WITH_SHA256"},
+      "second": {"file": "fold_01_second.joblib", "sha256": "REPLACE_WITH_SHA256"},
+      "selector": {"file": "fold_01_selector.joblib", "sha256": "REPLACE_WITH_SHA256"},
+      "nested_audit": {"file": "fold_01_nested_audit.json", "sha256": "REPLACE_WITH_SHA256"}
+    }
+  }
+}

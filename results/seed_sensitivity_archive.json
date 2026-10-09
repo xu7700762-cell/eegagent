@@ -1,0 +1,134 @@
+{
+  "purpose": "Preserved seed sensitivity results; different reference-based protocol; not current webpage metrics",
+  "reported_seed": 2026,
+  "source_commit": "d8bfec3d0dd8fd194698917a4a221c9aeb303684",
+  "original_result_sha256": "a9c4f4ce2aa97357bd97df0159651933426c0c31640153c9eb15f2672ce59914",
+  "records": [
+    {
+      "seed": 2026,
+      "paths": 146,
+      "gpt": {
+        "n": 146,
+        "correct": 105,
+        "accuracy": 0.7191780821917808,
+        "balanced_accuracy": 0.7184210526315788,
+        "macro_f1": 0.7185310575069356,
+        "sensitivity": 0.7368421052631579,
+        "specificity": 0.7,
+        "confusion_matrix": [
+          [
+            49,
+            21
+          ],
+          [
+            20,
+            56
+          ]
+        ]
+      },
+      "vrmsmodel": {
+        "n": 146,
+        "correct": 89,
+        "accuracy": 0.6095890410958904,
+        "balanced_accuracy": 0.6114661654135338,
+        "macro_f1": 0.6094241329140657,
+        "sensitivity": 0.5657894736842105,
+        "specificity": 0.6571428571428571,
+        "confusion_matrix": [
+          [
+            46,
+            24
+          ],
+          [
+            33,
+            43
+          ]
+        ]
+      }
+    },
+    {
+      "seed": 2027,
+      "paths": 146,
+      "gpt": {
+        "n": 146,
+        "correct": 101,
+        "accuracy": 0.6917808219178082,
+        "balanced_accuracy": 0.687593984962406,
+        "macro_f1": 0.686471009305655,
+        "sensitivity": 0.7894736842105263,
+        "specificity": 0.5857142857142857,
+        "confusion_matrix": [
+          [
+            41,
+            29
+          ],
+          [
+            16,
+            60
+          ]
+        ]
+      },
+      "vrmsmodel": {
+        "n": 146,
+        "correct": 84,
+        "accuracy": 0.5753424657534246,
+        "balanced_accuracy": 0.5768796992481203,
+        "macro_f1": 0.5752627627627627,
+        "sensitivity": 0.5394736842105263,
+        "specificity": 0.6142857142857143,
+        "confusion_matrix": [
+          [
+            43,
+            27
+          ],
+          [
+            35,
+            41
+          ]
+        ]
+      }
+    },
+    {
+      "seed": 2028,
+      "paths": 146,
+      "gpt": {
+        "n": 146,
+        "correct": 105,
+        "accuracy": 0.7191780821917808,
+        "balanced_accuracy": 0.7184210526315788,
+        "macro_f1": 0.7185310575069356,
+        "sensitivity": 0.7368421052631579,
+        "specificity": 0.7,
+        "confusion_matrix": [
+          [
+            49,
+            21
+          ],
+          [
+            20,
+            56
+          ]
+        ]
+      },
+      "vrmsmodel": {
+        "n": 146,
+        "correct": 88,
+        "accuracy": 0.6027397260273972,
+        "balanced_accuracy": 0.6037593984962406,
+        "macro_f1": 0.6027397260273972,
+        "sensitivity": 0.5789473684210527,
+        "specificity": 0.6285714285714286,
+        "confusion_matrix": [
+          [
+            44,
+            26
+          ],
+          [
+            32,
+            44
+          ]
+        ]
+      }
+    }
+  ]
+}

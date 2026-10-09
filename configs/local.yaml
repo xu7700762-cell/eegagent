@@ -1,0 +1,12 @@
+data_root: ./private_data
+output_root: ./outputs
+model_manifest: ./private_assets/seed2026/manifest.json
+seed: 2026
+window_seconds: 5
+minimum_path_windows: 3
+minimum_path_coverage: 0.8
+api_timeout_seconds: 60
+api_max_calls: 50
+# Linux native CUDA worker uses this environment's Python.
+# Windows: set worker_command to [wsl.exe, -d, YOUR_DISTRO]
+# and worker_python to the native CUDA environment's Python inside WSL.

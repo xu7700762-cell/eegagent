@@ -1,0 +1,110 @@
+{
+  "status": "independently_verified",
+  "evaluation_date": "2026-10-09",
+  "seed": 2026,
+  "model": "gpt-6.1-sol",
+  "protocol": "current_raw_eeg_gpt_tool_agent_no_reference",
+  "metrics": {
+    "gpt": {
+      "total": 146,
+      "correct": 108,
+      "accuracy": 0.7397260273972602,
+      "coverage": 1.0,
+      "available": 146,
+      "confusion_matrix_order": [
+        "Low",
+        "High"
+      ],
+      "confusion_matrix": [
+        [
+          50,
+          20
+        ],
+        [
+          18,
+          58
+        ]
+      ],
+      "balanced_accuracy": 0.7387218045112782
+    },
+    "vrmsmodel": {
+      "total": 146,
+      "correct": 94,
+      "accuracy": 0.6438356164383562,
+      "coverage": 1.0,
+      "available": 146,
+      "confusion_matrix_order": [
+        "Low",
+        "High"
+      ],
+      "confusion_matrix": [
+        [
+          49,
+          21
+        ],
+        [
+          31,
+          45
+        ]
+      ],
+      "balanced_accuracy": 0.6460526315789473
+    }
+  },
+  "scope": {
+    "subjects": 24,
+    "raw_event_segments": 165,
+    "complete_raw_paths": 154,
+    "incomplete_raw_paths": 11,
+    "scored_paths": 146,
+    "unscorable_complete_raw_paths": 8
+  },
+  "paired_changes": {
+    "model_errors_corrected": 28,
+    "model_correct_decisions_damaged": 14
+  },
+  "api": {
+    "calls": 345,
+    "failed_calls": 47,
+    "unique_successful_response_ids": 296,
+    "function_calls": {
+      "corrective_evidence": 148
+    }
+  },
+  "failure_recovery": {
+    "first_pass_valid_scored_paths": 105,
+    "final_valid_scored_paths": 146,
+    "attempts": 47,
+    "valid_decisions_never_retried_or_changed": true,
+    "same_frozen_eeg_evidence": true,
+    "numerical_fallback_as_gpt": false
+  },
+  "provenance": {
+    "summary_sha256": "15c8599a85a0fa3e355e7ac2821599d3d582a898da4578893478b835fb740804",
+    "protocol_sha256": "1a8f93669d2153c8846b9cf039ae852096e9e0e00275b0aa76d8f56d4d60e95e",
+    "completion_audit_sha256": "871b5337b15b1745e6f8d54a57120c4f4dabe5e2650a7db5ae6c273890cb38a1",
+    "recovery_audit_sha256": "3af7d6564dd6b61520db97bd366cb7524ff3fd5d931540642d5ca4f030560b16",
+    "paired_public_csv_sha256": "29e582343f468e1902386836397e206a99b2c2c18fe6d4fb875e3edeed1a2d59",
+    "evaluated_source_sha256": {
+      "evaluate_raw_gpt_all.py": "b68b61756eb3dede2e37f42c5a39f4ff4edc11c4496c1969656647ef54c2edfb",
+      "local.yaml": "95534466b1ffd439a3a2dc2ef073280fc00df815f805f84a20a9877316c26ca0",
+      "recordings.py": "95c7107621d01e7e2b7e94b4c11c1802aeab117e2fd80ab38c3cc06d067289e7",
+      "data.py": "46f9c178648319378766910568204c1dbf809449cd9779e55d6f83af64a2f520",
+      "raw_model.py": "ed23ff049c273f550176b8b21e39da304eb347da829df71bad1295f5a8ebd2ec",
+      "raw_tool_agent.py": "81042a6a8bf50957ca2c72f799ab9857e9ea93fa7668ee03358658049f141e2c",
+      "agents.py": "97f6c63f70cc9b1dfbdfd85b941dd85197d1d5c6573a8f5b32e304a851828db2",
+      "config.py": "37ca55a6bf0408da0f3c1be58e9d3ffc6fb40bcf72efc48b1dba1da99b21d742",
+      "raw_inference.py": "dc3855a655ae59d440709f260cc5037c356c426158883f2269146be808d46ab9",
+      "raw_numeric.py": "02609cd28184be04983ceaf43a227f1233b131242336a8e4c53daa65a513627b"
+    }
+  },
+  "packaging_validation": {
+    "full_gpt_rerun_after_packaging": false,
+    "changes": "portable asset paths, tool naming, current UI and documentation; see source_provenance.json"
+  },
+  "limitations": [
+    "Repeated local development data; no independent external generalization.",
+    "Original auxiliary pretraining split manifest unavailable; pretraining overlap is not excluded.",
+    "GPT protocol and tool names are packaged from the audited source; future API runs may differ.",
+    "This is whole-path VRMS classification, not accuracy for FatigueAgent or EmotionAgent."
+  ]
+}

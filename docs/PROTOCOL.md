@@ -1,39 +1,49 @@
-# V2 protocol and evidence boundaries
+# 当前网页与评价协议
 
-## Data eligibility
+## 任务与决策来源
 
-The endpoint is a whole-path score `<30` / `>=30`. Window labels are weak path labels, not instantaneous symptoms. CDT is float32 little-endian, sample-major, 1024 Hz, 37 channels; the model uses 30 EEG channels excluding M1/M2, which provide the simultaneous average reference. Stateful causal notch/bandpass/antialias processing yields 256 Hz, 5-second windows.
+当前入口为 `python -m eeg_agent serve`。Supervisor 维护对话并分派任务，VRMSAgent、FatigueAgent、EmotionAgent 在各自工具与知识范围内分析。Supervisor 对报告中的数字、类别和时间逐项核验，只汇总有本轮工具依据的结论。
 
-The data root must contain `raw/Acquisition xx.cdt[.dpo/.ceo]` and `labels/task_segments_with_path_scores.csv`, `labels/state_segments_by_mark.csv`. Task rows need file, subject_id, completeness/score flags, duration, start/end raw samples and path_score. Event completeness is verified against the actual task marks, not only CSV flags or a clipped endpoint.
+VRMS 的评价目标是整路径结束时问卷分数：`<30` 为 Low，`>=30` 为 High。VRMSModel 采用冻结编码器和注意力 MIL，阈值固定为 0.5。真实 GPT ACC 使用 `cloud_judgment.final_class`，须由实际 Responses 函数调用及合法 JSON 输出支持；本地工具类别、模拟响应和 API 失败后的说明均不能代替 GPT 分类。
 
-`audit_eligibility` retains all scored candidate records and exclusion reasons. CEO task marks are primary; if absent, Trigger channel transitions are used. The first event after a start20 must be the corresponding end22, exactly matching the CSV endpoint and within actual raw samples. The known acquisition04 candidate starts2516402, ends at clipped CSV EOF2626240, while its actual end22 is2645592. Current read-only audit gives147 candidates,146 eligible paths,24 subjects. Preparation allocates caches only after this filtering. Counts in downstream V2 stages are manifest-derived.
+GPT 调用八路证据：VRMS 特征、频谱、空间协方差、训练期邻居检索、VRMS 均值、VRMS 时序、紧凑频谱、滤波组 CSP；`corrective_evidence` 返回其冻结组合及内部验证信息。当前策略优先使用该工具证据估计，只有实际方向性验证支持时才改判。GPT 并非完全脱离数值工具的独立模型。组合运算保留在本地工具内部，网页报告仅展示 GPT 最终类别、工具依据与 VRMSModel/GPT 的配对 ACC。GPT 给出定性置信度，不生成新概率。
 
-An initial complete rest before the first task supplies a reference only if at least10 seconds remain after warm-up; at most30 seconds are used. Missing references stay unavailable. QC amplitude/nonflatness checks are engineering sanity constraints; the additional fraction acceptance gate is learned on internal policy subjects. QC has not been proven to detect every artifact.
+FatigueAgent 计算 θ/α 等疲劳相关指标；EmotionAgent 计算额区 θ/顶区 α 与 FAA 等指标。它们报告数值变化，不将指标转为未经验证的主观疲劳或情绪二分类。本文 ACC 仅评价 VRMS 路径任务。
 
-## Subject roles and calibration
+## 波形与事件
 
-Each of24 outer LOSO folds has14 base-training,5 meta,4 policy-validation and1 outer-test subject. The5 meta subjects are partitioned into3 head-fit and2 probability-calibration subjects with class support checked internally. CNN and physiological classifiers fit base subjects only, with fixed epochs. Classification heads fit the3 head-fit subjects. A monotone Platt calibrator fits deep-head predictions from the other2 meta subjects. There is no calibration on the same head-fit prediction rows.
+本地城市巡航 CDT 为小端 float32、样本优先、1024Hz，DPO 用于通道与单位元数据。实际完整样本数以文件长度为准。网页也接收不超过 512MB 的 EDF。VRMSModel 输入要求 30 个指定头皮 EEG 通道与 M1/M2；不兼容 EDF 仍可执行适用的描述性工具。
 
-OOD features are cheap log channel-scale/amplitude descriptors; robust center and scale use base-training signals only. Margin, OOD distance and valid-window-fraction cutoffs are empirical internal policy-set values. The declared selection goals are accuracy>=.80, coverage>=.35 and at least8 accepted paths. These are exploratory goals, not a reliability guarantee. Missing classes, failed calibration, reversed calibration slope or unmet policy goals prevent a reliable class release.
+路径从原始 Trigger 通道的 `20→22` 事件划分，休息段从 `22→下一次20` 划分。重复标记、无效标记或文件结束造成的未闭合片段保留完整性提示，不进入整路径分类或完整片段的首末比较。
 
-The four outputs are high/low/uncertain/insufficient_data. Final probability is p_cal exclusively; p_raw is separate. A usable but uncertain/OOD input remains uncertain; poor signal quality can yield insufficient_data. No valid calibration produces p_cal=null. Auxiliary tool classifiers and their consensus are diagnostic, not probability updates.
+记录开始已处于 VR 暴露环境，不设记录开头的静息参考。也不将首条路径或休息段用作正常基线。无参考特征采用冻结工具既有的缺失分支：相对参考特征为零、参考可用标记为零；路径内前后变化仍取真实窗口。
 
-## Dynamic evidence and Case RAG
+预处理与 `eeg_agent/recordings.py` 一致：M1/M2 平均参考、50Hz 陷波（Q=30）、四阶 Butterworth 0.5–45Hz 带通、八阶 Butterworth 70Hz 低通，采用有状态因果滤波；每四个样本取一个，得到 256Hz。启动和断流后舍弃五秒预热，不跨断点拼接。每窗五秒，形状 `30×1280`；峰峰值不超过 2000µV，至少 28 个通道的标准差不低于 0.05µV。完整路径至少三个合格窗口、窗口覆盖率至少 0.8 才能分类。配置更改意味着不同输入合同，不能直接沿用此 ACC。
 
-ToolReplay memoizes actual operations and records calls/timing. The deep+quality reliability gate can exit before retrieval/physiology. Otherwise CaseRetriever is called; unreliable/unvalidated retrieval or mixed/conflicting cases trigger Biomarker and available-reference Covariance. These tools do not overwrite p_cal. V2 cloud.prepare only builds deep/temporal/QC snapshots. Offline preparation timing is not the runtime lazy latency.
+## 冻结参数与数据隔离
 
-Retrieval uses shared finite raw deep/temporal/QC coordinates standardized on the internal case bank. Rankings are not label constrained. K=5, one case per subject, from the5 meta subjects; query subjects are excluded. Returned distances, high/low counts, distinct subject count, feature availability and range status are descriptions. Class count fractions are not calibrated outcome probabilities.
+seed2026 的 MIL 在每折 base14 被试上训练，固定末轮 12 epochs，没有按当前测试标签选择训练轮。波形归一化与冻结编码参数按对应折加载；全部 83 个编码器张量必须加载完整。数值工具使用 outer 被试之外的 base14/meta5 参数，组合器还使用 policy4 的内部预测。留出被试不得进入对应折的模型拟合、归一化或邻居支持集合。
 
-Reliable distance ranges are selected from meta-only subject-LOSO neighbor votes with scaler refits excluding each heldout subject. Range evaluation uses a nested LOSO that also excludes the evaluation subject from threshold selection. If no internal threshold passes the declared goals, the retrieval is unvalidated. Per-fold internal banks overlap across outer folds, so these diagnostics cannot be counted as independent outer evidence. Balanced up-to4-per-class few-shot selection is retained as a separate control.
+本次评价没有训练调用。推理从原始波形重新编码，不读取当前被试的标签、问卷、MAT、历史预测或已编码查询特征。冻结训练期邻居参数属于本地估计器；不向 GPT 发送其训练样本、身份或问卷答案。知识检索只提供通用方法文本。
 
-## Physiological and cloud evidence
+准备阶段读取可评分标记、路径边界和时长，以精确路径时长匹配确定每条记录的固定事件偏移。评分数值不作为推理特征。完成全部预测后，评分阶段才用目标分数生成真实 High/Low，并与两种决策对照。
 
-Biomarker descriptions report mean relative delta/theta/alpha/beta power and natural-log changes from the initial pre-task reference. Covariance distance is the mean Frobenius norm of the log reference-whitened covariance. Its magnitude has no high/low direction. No fixed spectral direction rule is used. Without independent directional verification the structured verification stays inconclusive with null model conflict. Missing reference is not low-class evidence.
+## 全路径分母与失败补跑
 
-The cloud schema returns only id, supporting_evidence, conflicting_evidence, missing_evidence and explanation. It cannot return probabilities, final states or confidence. Supervisor determines the final state from machine reliability. Explanations, failures or injected scores cannot change p_cal or release an unvalidated class. Reliable and quality-rejected cases skip cloud calls. Requests contain one anonymous query, internal examples and no query labels/source identities/raw EEG. Local audits may keep subject provenance; outbound reliability contains counts only.
+固定评分范围为 24 名被试、146 条原始事件完整且有路径评分的路径。原始记录共有 165 个任务片段：154 个完整、11 个不完整。完整片段中八条不进入评分，其中六条未满足分类窗口规则、两条无匹配评分；有模型输出的无评分路径单独保留，不计 ACC。
 
-## Reporting and preserved history
+原标签候选共 147 条；其中一条结束事件超过原始文件 EOF，排除后固定为 146。模型或 GPT 无输出时保留空类别，按错误计入固定分母，同时报告有效输出覆盖率；不得以成功返回的子集替换主 ACC。
 
-Report all eligible-path denominators, score coverage, publication coverage, conditional published metrics, Brier/AUROC and model-threshold diagnostics separately. Refusals remain in the denominator. Subject-cluster bootstrap is appropriate for comparisons; windows are not independent replicates. Tool timing is desktop assessment after preprocessing, excluding recording time, complete deployment latency, clinical/Pi validity and any skipped computation.
+每个被试评价共享最多 50 次 API 调用，单次 60 秒；每条路径最多四轮 GPT 交互。失败补跑使用同次评价已重新计算的波形证据，只重试尚无合法最终类别的路径，不修改有效决策。首次恢复每条失败路径最多两次、连续三次失败则停止本轮；补跑后重新评分。代码、配置、数据及模型清单的哈希在各阶段核验。
 
-V2 defaults use independent v2_seed2026 directories. Existing caches/training results are not overwritten. Old147-path caches/checkpoints are rejected and must be regenerated after eligibility correction. Merely dropping the old final OOF row does not repair earlier model fitting or selection. V1 code/results and release manifests remain historical references (commit205abc7), with no V2 performance claim. No formal retraining or real API experiment was run for this change. Previously inspected outer data remain exploratory.
+2026-10-09 的首次预测得到 105/146 个有效 GPT 类别，失败补跑后达到 146/146。最终 GPT 判对 108 条、VRMSModel 判对 94 条。总计 345 次 API 调用，其中 47 次失败；296 个独立成功响应 ID 支持 148 条可分类原始路径的真实函数交互，其中两条没有评分。有效决策未因答错而重试。
+
+## 时间解释与结果范围
+
+“首条高类路径”指按原始时间排序的第一条 GPT 判为 High 的完整路径。模型使用整条路径数据，决策最早在路径结束后形成；该区间不能确定路径内部真实症状首次出现的秒数。
+
+共享与领域知识库使用本地 BM25 候选 top-20 和词项重排 top-5，不宣称密集向量检索或交叉编码器。方法引用与本轮测量分开核验；附加文档内容只能作为证据，不能替换用户要求或执行协议。
+
+结果属于经过反复开发的本地数据，不能当作未接触的外部测试。编码器恢复自辅助 EEG 预训练权重；原始预训练划分及归一化清单未完整保留，因此无法排除预训练重叠，输入迁移也有边界。不能将 ACC 差异单独归因于 GPT 的独立推理能力。
+
+三个种子的历史聚合保留在 `results/seed_sensitivity_archive.json`，只用于结果归档，不能与当前无参考波形协议混合报告。主表固定 seed2026。本次完整 GPT 评价的冻结来源见 `results/current_seed2026.json`；公开整理后的模型等价核对见 `results/packaging_validation.json`。公开名称和提示文字整理后没有再次完整请求所有 GPT 路径，后续运行不保证逐条复现云端决策。
