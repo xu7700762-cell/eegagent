@@ -69,6 +69,9 @@ def _raw_preparation_summary(evidence):
     """Give a planner safe local quality facts, never waveform or identity."""
     record = (evidence or {}).get('recording') or {}
     quality = (record.get('channel_quality') or {}).get('after_repair') or {}
+    blocking = quality.get('blocking_bad_channels')
+    if blocking is None:
+        blocking = quality.get('bad_channels') or []
     return {
         'sampling_hz': record.get('sampling_hz'),
         'channel_count': len(record.get('eeg_channels') or []),
@@ -79,7 +82,7 @@ def _raw_preparation_summary(evidence):
         'window_coverage': (record.get('overall') or {}).get('window_coverage'),
         'quality_status': quality.get('status'),
         'bad_channels': list(quality.get('bad_channels') or []),
-        'blocking_bad_channels': list(quality.get('blocking_bad_channels') or quality.get('bad_channels') or []),
+        'blocking_bad_channels': list(blocking),
         'channel_reasons': [
             {'name': item.get('name'), 'bad': item.get('bad'), 'reasons': list(item.get('reasons') or [])}
             for item in quality.get('channels', []) if isinstance(item, dict)

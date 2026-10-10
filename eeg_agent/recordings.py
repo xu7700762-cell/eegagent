@@ -127,14 +127,14 @@ def assess_channel_quality(processed, names, *, z_threshold=3.0,
             reasons.append('peak_to_peak_above_threshold')
         if std[i] < flat_threshold:
             reasons.append('flat_channel')
-        if any(reason in blocking_reasons for reason in reasons):
-            blocking.append(name)
-        elif reasons:
-            warnings.append(name)
         if abs(log_std_z[i]) > z_threshold:
             reasons.append('robust_amplitude_outlier')
         if correlations[i] is not None and correlations[i] < corr_threshold:
             reasons.append('low_median_reference_correlation')
+        if any(reason in blocking_reasons for reason in reasons):
+            blocking.append(name)
+        elif reasons:
+            warnings.append(name)
         is_bad = bool(reasons)
         if is_bad:
             bad.append(name)
@@ -173,15 +173,15 @@ def reclassify_channel_quality(report, *, z_threshold=3.0, corr_threshold=.4,
             reasons.append('peak_to_peak_above_threshold')
         if old['std_uv'] < flat_threshold:
             reasons.append('flat_channel')
-        if any(reason in blocking_reasons for reason in reasons):
-            blocking.append(old['name'])
-        elif reasons:
-            warnings.append(old['name'])
         if abs(old['robust_amplitude_z']) > z_threshold:
             reasons.append('robust_amplitude_outlier')
         corr = old.get('median_reference_correlation')
         if corr is not None and corr < corr_threshold:
             reasons.append('low_median_reference_correlation')
+        if any(reason in blocking_reasons for reason in reasons):
+            blocking.append(old['name'])
+        elif reasons:
+            warnings.append(old['name'])
         item = {**old, 'bad': bool(reasons), 'reasons': reasons}
         channels.append(item)
         if reasons:
@@ -195,8 +195,7 @@ def reclassify_channel_quality(report, *, z_threshold=3.0, corr_threshold=.4,
                            'flat_threshold_uv': float(flat_threshold)}}
 
 
-def apply_channel_repair(processed, names, bad_channels, strategy='none', min_neighbors=2,
-                         unavailable_donors=()):
+def apply_channel_repair(processed, names, bad_channels, strategy='none', min_neighbors=2):
     """Drop or interpolate explicitly identified channels in local processed EEG."""
     strategy = str(strategy).lower()
     names = list(names)
@@ -217,7 +216,7 @@ def apply_channel_repair(processed, names, bad_channels, strategy='none', min_ne
     if isinstance(min_neighbors, bool) or not isinstance(min_neighbors, int) or not 2 <= min_neighbors <= 30:
         raise ValueError('min_neighbors must be an integer between 2 and 30')
     result = np.asarray(processed, dtype=np.float32).copy()
-    bad_set = set(bad) | set(unavailable_donors)
+    bad_set = set(bad)
     index = {name: i for i, name in enumerate(names)}
     donors = {}
     for name in bad:
