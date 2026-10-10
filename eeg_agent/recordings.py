@@ -83,10 +83,168 @@ def _robust_z(values):
     return (values - center) / scale
 
 
+def _window_quality(processed, names, *, window_samples=1280,
+                    z_threshold=3.0, corr_threshold=.4,
+                    amplitude_threshold=2000.0, flat_threshold=.05,
+                    persistence_threshold=.5):
+    """Aggregate channel faults over non-overlapping five-second windows.
+
+    A single high-amplitude window is treated as a transient event.  It is
+    retained in the report as a warning, while a channel is blocking only when
+    the same fault persists in at least ``persistence_threshold`` of usable
+    windows.  Windows that are mostly missing for every channel are excluded
+    from the denominator, because acquisition warm-up and shared gaps are
+    coverage problems rather than independent lead failures.
+    """
+    x = np.asarray(processed, float)
+    if isinstance(window_samples, bool) or not isinstance(window_samples, int) or window_samples < 2:
+        raise ValueError('window_samples must be an integer >= 2')
+    if not 0 < persistence_threshold <= 1:
+        raise ValueError('persistence_threshold must be in (0, 1]')
+    total = int(x.shape[1] // window_samples)
+    empty = {
+        'window_samples': window_samples,
+        'window_seconds': round(window_samples / 256.0, 6),
+        'total_windows': total,
+        'usable_windows': 0,
+        'ignored_windows': total,
+        'persistence_threshold': float(persistence_threshold),
+        'shared_artifact_windows': 0,
+        'shared_artifact_fraction': 0.0,
+        'channels': {},
+    }
+    if total == 0:
+        return empty
+
+    counts = {
+        name: {'bad_window_count': 0, 'reason_counts': {}}
+        for name in names
+    }
+    usable = 0
+    shared_artifacts = 0
+    blocking_reasons = {'missing_or_nonfinite_samples', 'peak_to_peak_above_threshold',
+                        'flat_channel', 'robust_amplitude_outlier'}
+    for ordinal in range(total):
+        left = ordinal * window_samples
+        window = x[:, left:left + window_samples]
+        finite = np.isfinite(window)
+        # A fully missing/warm-up window is ignored for lead persistence.  A
+        # partially missing channel remains eligible and is counted as bad.
+        if not finite.any() or float(finite.mean()) < .5:
+            continue
+        usable += 1
+        finite_fraction = finite.mean(axis=1)
+        finite_rows = [row[np.isfinite(row)] for row in window]
+        ptp = np.array([np.ptp(row) if len(row) else 0. for row in finite_rows])
+        std = np.array([np.std(row) if len(row) else 0. for row in finite_rows])
+        log_std_z = _robust_z(np.log(np.maximum(std, 1e-12)))
+        reference = np.nanmedian(np.where(finite, window, np.nan), axis=0)
+        correlations = []
+        for row in window:
+            common = np.isfinite(row) & np.isfinite(reference)
+            centered = row[common] - np.mean(row[common]) if common.any() else np.array([])
+            reference_centered = reference[common] - np.mean(reference[common]) if common.any() else np.array([])
+            denom = float(np.linalg.norm(centered) * np.linalg.norm(reference_centered))
+            correlations.append(None if denom <= 1e-12 else float(np.dot(centered, reference_centered) / denom))
+
+        per_channel = []
+        for i, name in enumerate(names):
+            reasons = []
+            if finite_fraction[i] < .99:
+                reasons.append('missing_or_nonfinite_samples')
+            if ptp[i] > amplitude_threshold:
+                reasons.append('peak_to_peak_above_threshold')
+            if std[i] < flat_threshold:
+                reasons.append('flat_channel')
+            if abs(log_std_z[i]) > z_threshold:
+                reasons.append('robust_amplitude_outlier')
+            if correlations[i] is not None and correlations[i] < corr_threshold:
+                reasons.append('low_median_reference_correlation')
+            per_channel.append(reasons)
+
+        # If most channels fail amplitude/robustness in one window, keep that
+        # window as a shared artifact.  It must not turn a common transient
+        # into 30 independent interpolation requests.
+        amplitude_failures = sum(
+            any(reason in {'peak_to_peak_above_threshold', 'robust_amplitude_outlier'} for reason in reasons)
+            for reasons in per_channel
+        )
+        shared = amplitude_failures >= max(2, int(math.ceil(.5 * len(names))))
+        if shared:
+            shared_artifacts += 1
+        for name, reasons in zip(names, per_channel):
+            if shared:
+                reasons = [reason for reason in reasons
+                           if reason not in {'peak_to_peak_above_threshold', 'robust_amplitude_outlier'}]
+            for reason in reasons:
+                counts[name]['reason_counts'][reason] = counts[name]['reason_counts'].get(reason, 0) + 1
+            if any(reason in blocking_reasons for reason in reasons):
+                counts[name]['bad_window_count'] += 1
+
+    result = {**empty,
+              'usable_windows': usable,
+              'ignored_windows': total - usable,
+              'shared_artifact_windows': shared_artifacts,
+              'shared_artifact_fraction': round(shared_artifacts / max(1, usable), 6)}
+    for name in names:
+        item = counts[name]
+        reason_counts = item['reason_counts']
+        item['eligible_window_count'] = usable
+        item['bad_window_fraction'] = round(item['bad_window_count'] / max(1, usable), 6)
+        item['persistent_reasons'] = sorted(
+            reason for reason, count in reason_counts.items()
+            if count / max(1, usable) >= persistence_threshold
+        )
+        item['transient_reasons'] = sorted(
+            reason for reason, count in reason_counts.items()
+            if 0 < count / max(1, usable) < persistence_threshold
+        )
+        result['channels'][name] = item
+    return result
+
+
+def _apply_window_quality(channels, window_qc):
+    """Apply persistent/transient window labels to channel metric rows."""
+    blocking_reasons = {'missing_or_nonfinite_samples', 'peak_to_peak_above_threshold',
+                        'flat_channel', 'robust_amplitude_outlier'}
+    bad = []
+    blocking = []
+    warnings = []
+    persistent = []
+    transient = []
+    for item in channels:
+        aggregate = window_qc.get('channels', {}).get(item['name'], {})
+        persistent_reasons = list(aggregate.get('persistent_reasons', []))
+        transient_reasons = list(aggregate.get('transient_reasons', []))
+        reasons = sorted(set(persistent_reasons + transient_reasons))
+        item.update({
+            'bad': bool(reasons),
+            'reasons': reasons,
+            'bad_window_count': aggregate.get('bad_window_count', 0),
+            'eligible_window_count': aggregate.get('eligible_window_count', 0),
+            'bad_window_fraction': aggregate.get('bad_window_fraction', 0.0),
+            'window_reason_counts': aggregate.get('reason_counts', {}),
+            'persistent_reasons': persistent_reasons,
+            'transient_reasons': transient_reasons,
+        })
+        if reasons:
+            bad.append(item['name'])
+        if persistent_reasons:
+            persistent.append(item['name'])
+        if transient_reasons and not persistent_reasons:
+            transient.append(item['name'])
+        if any(reason in blocking_reasons for reason in persistent_reasons):
+            blocking.append(item['name'])
+        elif reasons:
+            warnings.append(item['name'])
+    return bad, blocking, warnings, persistent, transient
+
+
 def assess_channel_quality(processed, names, *, z_threshold=3.0,
                            corr_threshold=.4, amplitude_threshold=2000.0,
-                           flat_threshold=.05):
-    """Return transparent channel metrics and conservative bad-channel flags."""
+                           flat_threshold=.05, window_samples=1280,
+                           persistence_threshold=.5):
+    """Return transparent channel metrics and five-second persistence flags."""
     x = np.asarray(processed, float)
     _quality_thresholds(z_threshold, corr_threshold, amplitude_threshold, flat_threshold)
     if x.ndim != 2 or x.shape[0] != len(names) or len(names) < 2:
@@ -144,13 +302,31 @@ def assess_channel_quality(processed, names, *, z_threshold=3.0,
                          'median_reference_correlation': None if correlations[i] is None else round(correlations[i], 6),
                          'robust_amplitude_z': round(float(log_std_z[i]), 6),
                          'bad': is_bad, 'reasons': reasons})
-    return {'status': 'pass' if not blocking else 'review',
-            'score': round(100. * (len(names) - len(bad)) / max(1, len(names)), 4),
+    window_qc = _window_quality(
+        x, names, window_samples=window_samples, z_threshold=z_threshold,
+        corr_threshold=corr_threshold, amplitude_threshold=amplitude_threshold,
+        flat_threshold=flat_threshold, persistence_threshold=persistence_threshold)
+    if window_qc.get('usable_windows', 0):
+        bad, blocking, warnings, persistent, transient = _apply_window_quality(channels, window_qc)
+    else:
+        persistent = list(blocking)
+        transient = list(warnings)
+    shared_blocking = window_qc.get('shared_artifact_fraction', 0.0) >= persistence_threshold
+    return {'status': 'pass' if not blocking and not shared_blocking else 'review',
+            # ``score`` is the hard quality score used by the model gate;
+            # warnings (including transient/shared artifacts and low
+            # reference correlation) are reported separately.
+            'score': round(100. * (len(names) - len(blocking)) / max(1, len(names)), 4),
+            'warning_score': round(100. * (len(names) - len(bad)) / max(1, len(names)), 4),
             'bad_channels': bad, 'blocking_bad_channels': blocking, 'warning_channels': warnings,
-            'channels': channels,
+            'persistent_bad_channels': persistent, 'transient_bad_channels': transient,
+            'shared_artifact_blocking': bool(shared_blocking),
+            'channels': channels, 'window_qc': window_qc,
             'thresholds': {'z_threshold': float(z_threshold), 'corr_threshold': float(corr_threshold),
                            'amplitude_threshold_uv': float(amplitude_threshold),
-                           'flat_threshold_uv': float(flat_threshold)}}
+                           'flat_threshold_uv': float(flat_threshold),
+                           'window_samples': int(window_samples),
+                           'persistence_threshold': float(persistence_threshold)}}
 
 
 def reclassify_channel_quality(report, *, z_threshold=3.0, corr_threshold=.4,
@@ -159,6 +335,35 @@ def reclassify_channel_quality(report, *, z_threshold=3.0, corr_threshold=.4,
     _quality_thresholds(z_threshold, corr_threshold, amplitude_threshold, flat_threshold)
     if report.get('status') == 'unavailable':
         return copy.deepcopy(report)
+    # New reports carry per-window counts, so threshold reclassification can
+    # preserve the transient-versus-persistent distinction.  Counts are only
+    # exact for the thresholds used during acquisition; when a caller asks for
+    # a different threshold, retain the legacy whole-record fallback below.
+    stored = report.get('thresholds', {})
+    same_thresholds = all(
+        abs(float(stored.get(key, value)) - float(value)) <= 1e-12
+        for key, value in (
+            ('z_threshold', z_threshold), ('corr_threshold', corr_threshold),
+            ('amplitude_threshold_uv', amplitude_threshold), ('flat_threshold_uv', flat_threshold))
+    )
+    window_qc = report.get('window_qc')
+    if window_qc and same_thresholds and all('window_reason_counts' in item for item in report.get('channels', [])):
+        channels = copy.deepcopy(report.get('channels', []))
+        bad, blocking, warnings, persistent, transient = _apply_window_quality(channels, window_qc)
+        shared_blocking = window_qc.get('shared_artifact_fraction', 0.0) >= float(
+            stored.get('persistence_threshold', .5))
+        return {**copy.deepcopy(report),
+                'status': 'pass' if not blocking and not shared_blocking else 'review',
+                'score': round(100. * (len(channels) - len(blocking)) / max(1, len(channels)), 4),
+                'warning_score': round(100. * (len(channels) - len(bad)) / max(1, len(channels)), 4),
+                'bad_channels': bad, 'blocking_bad_channels': blocking,
+                'warning_channels': warnings, 'persistent_bad_channels': persistent,
+                'transient_bad_channels': transient,
+                'shared_artifact_blocking': bool(shared_blocking), 'channels': channels,
+                'thresholds': {**stored, 'z_threshold': float(z_threshold),
+                               'corr_threshold': float(corr_threshold),
+                               'amplitude_threshold_uv': float(amplitude_threshold),
+                               'flat_threshold_uv': float(flat_threshold)}}
     channels = []
     bad = []
     blocking = []
@@ -187,7 +392,8 @@ def reclassify_channel_quality(report, *, z_threshold=3.0, corr_threshold=.4,
         if reasons:
             bad.append(item['name'])
     return {'status': 'pass' if not blocking else 'review',
-            'score': round(100. * (len(channels) - len(bad)) / max(1, len(channels)), 4),
+            'score': round(100. * (len(channels) - len(blocking)) / max(1, len(channels)), 4),
+            'warning_score': round(100. * (len(channels) - len(bad)) / max(1, len(channels)), 4),
             'bad_channels': bad, 'blocking_bad_channels': blocking, 'warning_channels': warnings,
             'channels': channels,
             'thresholds': {'z_threshold': float(z_threshold), 'corr_threshold': float(corr_threshold),

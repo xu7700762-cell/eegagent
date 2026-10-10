@@ -31,6 +31,42 @@ def test_quality_assessor_flags_flat_channel_and_repair_interpolates_named_donor
     assert np.allclose(repaired[0], np.mean(repaired[[1, 2]], axis=0))
 
 
+def test_quality_assessor_does_not_turn_one_shared_transient_into_bad_leads():
+    samples = 3 * 1280
+    t = np.arange(samples, dtype=float) / 256.0
+    signal = np.vstack([
+        np.sin(2 * np.pi * 1.0 * t),
+        np.sin(2 * np.pi * 1.0 * t + .1),
+        np.sin(2 * np.pi * 1.0 * t - .1),
+        np.sin(2 * np.pi * 1.0 * t + .2),
+    ])
+    # A short common artifact is a window event, not four permanently broken
+    # electrodes.  The window aggregator should ignore it for interpolation.
+    signal[:, 100] += 5000.0
+    report = assess_channel_quality(signal, ['F3', 'Fz', 'F4', 'Cz'])
+    assert report['status'] == 'pass'
+    assert report['persistent_bad_channels'] == []
+    assert report['blocking_bad_channels'] == []
+    assert report['window_qc']['shared_artifact_windows'] == 1
+    assert report['window_qc']['shared_artifact_fraction'] < .5
+
+
+def test_quality_assessor_marks_a_flat_lead_persistent_across_windows():
+    samples = 3 * 1280
+    t = np.arange(samples, dtype=float) / 256.0
+    signal = np.vstack([
+        np.zeros(samples),
+        np.sin(2 * np.pi * 1.0 * t),
+        np.sin(2 * np.pi * 1.0 * t + .1),
+        np.sin(2 * np.pi * 1.0 * t + .2),
+    ])
+    report = assess_channel_quality(signal, ['F3', 'Fz', 'F4', 'Cz'])
+    assert report['status'] == 'review'
+    assert 'F3' in report['persistent_bad_channels']
+    assert 'F3' in report['blocking_bad_channels']
+    assert report['channels'][0]['bad_window_fraction'] == 1.0
+
+
 def test_channel_drop_removes_bad_lead_and_marks_model_contract_as_noncompatible_by_shape():
     names = ['F3', 'Fz', 'F4']
     repaired, returned_names, details = apply_channel_repair(
