@@ -80,6 +80,20 @@ def test_raw_reads_only_waveform_and_header(raw_cfg, monkeypatch):
         check(recording_tool(tool, evidence))
 
 
+def test_quality_gate_blocks_vrms_model_when_a_lead_is_flat(raw_cfg):
+    path = Path(raw_cfg['data_root']) / 'data/raw/Acquisition 10.cdt'
+    raw = np.memmap(path, mode='r+', dtype='<f4', shape=(70 * 1024, 37))
+    raw[:, 0] = 0.0
+    raw.flush()
+    repository = RecordingRepository(raw_cfg)
+    evidence = repository.analyze('subject-10')
+    record = evidence['recording']
+    assert 'F3' in record['channel_quality']['after_repair']['bad_channels']
+    assert record['channel_quality']['after_repair']['status'] == 'review'
+    assert record['model_compatible'] is False
+    assert '质量检查未通过' in record['model_compatibility_reason']
+
+
 def test_trigger_edges_and_gap_reset(raw_cfg):
     values = np.zeros((70000, 1), np.float32)
     values[65535:65540] = 20

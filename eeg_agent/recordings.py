@@ -57,9 +57,22 @@ def normalize_repair_plan(plan):
     if not isinstance(bad, (list, tuple)) or any(not isinstance(x, str) or not x.strip() for x in bad):
         raise ValueError('bad_channels must be a list of channel names')
     bad = list(dict.fromkeys(x.strip() for x in bad))
+    auto_detect = plan.get('auto_detect', False)
+    minimum = plan.get('min_neighbors', 2)
+    if not isinstance(auto_detect, bool):
+        raise ValueError('auto_detect must be a boolean')
+    if isinstance(minimum, bool) or not isinstance(minimum, int) or not 2 <= minimum <= 30:
+        raise ValueError('min_neighbors must be an integer between 2 and 30')
     return {'strategy': strategy, 'bad_channels': bad,
-            'auto_detect': bool(plan.get('auto_detect', False)),
-            'min_neighbors': max(1, int(plan.get('min_neighbors', 2)))}
+            'auto_detect': auto_detect, 'min_neighbors': minimum}
+
+
+def _quality_thresholds(z_threshold, corr_threshold, amplitude_threshold, flat_threshold):
+    values = (z_threshold, corr_threshold, amplitude_threshold, flat_threshold)
+    if (not all(math.isfinite(float(value)) for value in values) or
+            z_threshold <= 0 or not -1 <= corr_threshold <= 1 or
+            not 0 < flat_threshold < amplitude_threshold):
+        raise ValueError('Invalid EEG quality thresholds')
 
 
 def _robust_z(values):
@@ -75,28 +88,37 @@ def assess_channel_quality(processed, names, *, z_threshold=3.0,
                            flat_threshold=.05):
     """Return transparent channel metrics and conservative bad-channel flags."""
     x = np.asarray(processed, float)
-    if x.ndim != 2 or x.shape[0] != len(names):
+    _quality_thresholds(z_threshold, corr_threshold, amplitude_threshold, flat_threshold)
+    if x.ndim != 2 or x.shape[0] != len(names) or len(names) < 2:
         raise ValueError('processed EEG must have shape channels by samples')
-    finite = np.isfinite(x).all(axis=0)
-    if not finite.any():
+    # All-channel NaNs are deliberately inserted during filter warmup and
+    # acquisition gaps. They affect window coverage, not individual lead faults.
+    observable = np.isfinite(x).any(axis=0)
+    if not observable.any():
         return {'status': 'unavailable', 'score': 0., 'bad_channels': list(names),
+                'blocking_bad_channels': list(names),
                 'channels': [{'name': name, 'finite_fraction': 0., 'bad': True,
                               'reasons': ['no_finite_samples']} for name in names]}
-    values = x[:, finite]
-    finite_fraction = np.mean(np.isfinite(x), axis=1)
-    ptp = np.ptp(np.nan_to_num(values, nan=0.), axis=1)
-    std = np.std(np.nan_to_num(values, nan=0.), axis=1)
+    values = x[:, observable]
+    finite_fraction = np.mean(np.isfinite(values), axis=1)
+    finite_rows = [row[np.isfinite(row)] for row in values]
+    ptp = np.array([np.ptp(row) if len(row) else 0. for row in finite_rows])
+    std = np.array([np.std(row) if len(row) else 0. for row in finite_rows])
     log_std_z = _robust_z(np.log(np.maximum(std, 1e-12)))
-    reference = np.nanmedian(values, axis=0)
-    reference_centered = reference - np.mean(reference)
-    ref_norm = float(np.linalg.norm(reference_centered))
+    reference = np.nanmedian(np.where(np.isfinite(values), values, np.nan), axis=0)
     correlations = []
     for row in values:
-        centered = row - np.mean(row)
-        denom = float(np.linalg.norm(centered) * ref_norm)
+        common = np.isfinite(row) & np.isfinite(reference)
+        centered = row[common] - np.mean(row[common]) if common.any() else np.array([])
+        reference_centered = reference[common] - np.mean(reference[common]) if common.any() else np.array([])
+        denom = float(np.linalg.norm(centered) * np.linalg.norm(reference_centered))
         correlations.append(None if denom <= 1e-12 else float(np.dot(centered, reference_centered) / denom))
     channels = []
     bad = []
+    blocking = []
+    warnings = []
+    blocking_reasons = {'missing_or_nonfinite_samples', 'peak_to_peak_above_threshold',
+                        'flat_channel', 'robust_amplitude_outlier'}
     for i, name in enumerate(names):
         reasons = []
         if finite_fraction[i] < .99:
@@ -105,6 +127,10 @@ def assess_channel_quality(processed, names, *, z_threshold=3.0,
             reasons.append('peak_to_peak_above_threshold')
         if std[i] < flat_threshold:
             reasons.append('flat_channel')
+        if any(reason in blocking_reasons for reason in reasons):
+            blocking.append(name)
+        elif reasons:
+            warnings.append(name)
         if abs(log_std_z[i]) > z_threshold:
             reasons.append('robust_amplitude_outlier')
         if correlations[i] is not None and correlations[i] < corr_threshold:
@@ -118,9 +144,10 @@ def assess_channel_quality(processed, names, *, z_threshold=3.0,
                          'median_reference_correlation': None if correlations[i] is None else round(correlations[i], 6),
                          'robust_amplitude_z': round(float(log_std_z[i]), 6),
                          'bad': is_bad, 'reasons': reasons})
-    return {'status': 'pass' if not bad else 'review',
+    return {'status': 'pass' if not blocking else 'review',
             'score': round(100. * (len(names) - len(bad)) / max(1, len(names)), 4),
-            'bad_channels': bad, 'channels': channels,
+            'bad_channels': bad, 'blocking_bad_channels': blocking, 'warning_channels': warnings,
+            'channels': channels,
             'thresholds': {'z_threshold': float(z_threshold), 'corr_threshold': float(corr_threshold),
                            'amplitude_threshold_uv': float(amplitude_threshold),
                            'flat_threshold_uv': float(flat_threshold)}}
@@ -129,10 +156,15 @@ def assess_channel_quality(processed, names, *, z_threshold=3.0,
 def reclassify_channel_quality(report, *, z_threshold=3.0, corr_threshold=.4,
                                amplitude_threshold=2000.0, flat_threshold=.05):
     """Reapply thresholds to cached metrics without rereading raw EEG."""
+    _quality_thresholds(z_threshold, corr_threshold, amplitude_threshold, flat_threshold)
     if report.get('status') == 'unavailable':
         return copy.deepcopy(report)
     channels = []
     bad = []
+    blocking = []
+    warnings = []
+    blocking_reasons = {'missing_or_nonfinite_samples', 'peak_to_peak_above_threshold',
+                        'flat_channel', 'robust_amplitude_outlier'}
     for old in report.get('channels', []):
         reasons = []
         if old['finite_fraction'] < .99:
@@ -141,6 +173,10 @@ def reclassify_channel_quality(report, *, z_threshold=3.0, corr_threshold=.4,
             reasons.append('peak_to_peak_above_threshold')
         if old['std_uv'] < flat_threshold:
             reasons.append('flat_channel')
+        if any(reason in blocking_reasons for reason in reasons):
+            blocking.append(old['name'])
+        elif reasons:
+            warnings.append(old['name'])
         if abs(old['robust_amplitude_z']) > z_threshold:
             reasons.append('robust_amplitude_outlier')
         corr = old.get('median_reference_correlation')
@@ -150,15 +186,17 @@ def reclassify_channel_quality(report, *, z_threshold=3.0, corr_threshold=.4,
         channels.append(item)
         if reasons:
             bad.append(item['name'])
-    return {'status': 'pass' if not bad else 'review',
+    return {'status': 'pass' if not blocking else 'review',
             'score': round(100. * (len(channels) - len(bad)) / max(1, len(channels)), 4),
-            'bad_channels': bad, 'channels': channels,
+            'bad_channels': bad, 'blocking_bad_channels': blocking, 'warning_channels': warnings,
+            'channels': channels,
             'thresholds': {'z_threshold': float(z_threshold), 'corr_threshold': float(corr_threshold),
                            'amplitude_threshold_uv': float(amplitude_threshold),
                            'flat_threshold_uv': float(flat_threshold)}}
 
 
-def apply_channel_repair(processed, names, bad_channels, strategy='none', min_neighbors=2):
+def apply_channel_repair(processed, names, bad_channels, strategy='none', min_neighbors=2,
+                         unavailable_donors=()):
     """Drop or interpolate explicitly identified channels in local processed EEG."""
     strategy = str(strategy).lower()
     names = list(names)
@@ -170,12 +208,16 @@ def apply_channel_repair(processed, names, bad_channels, strategy='none', min_ne
         return np.asarray(processed, dtype=np.float32), names, {'strategy': 'none', 'bad_channels': [], 'donors': {}}
     if strategy == 'drop':
         keep = [i for i, name in enumerate(names) if name not in set(bad)]
+        if len(keep) < 2:
+            raise ValueError('Channel drop must retain at least two scalp EEG channels')
         return np.asarray(processed, dtype=np.float32)[keep], [names[i] for i in keep], {
             'strategy': 'drop', 'bad_channels': bad, 'donors': {}, 'remaining_channels': [names[i] for i in keep]}
     if strategy != 'interpolate':
         raise ValueError('channel repair strategy must be none, drop or interpolate')
+    if isinstance(min_neighbors, bool) or not isinstance(min_neighbors, int) or not 2 <= min_neighbors <= 30:
+        raise ValueError('min_neighbors must be an integer between 2 and 30')
     result = np.asarray(processed, dtype=np.float32).copy()
-    bad_set = set(bad)
+    bad_set = set(bad) | set(unavailable_donors)
     index = {name: i for i, name in enumerate(names)}
     donors = {}
     for name in bad:
@@ -184,8 +226,8 @@ def apply_channel_repair(processed, names, bad_channels, strategy='none', min_ne
             raise ValueError('Not enough named neighbouring donor channels for interpolation: ' + name)
         donor_indices = [index[x] for x in candidates]
         donor_values = result[donor_indices]
-        with np.errstate(invalid='ignore'):
-            replacement = np.nanmean(donor_values, axis=0)
+        # Preserve shared gaps; interpolation must not bridge missing epochs.
+        replacement = np.mean(donor_values, axis=0)
         result[index[name]] = replacement.astype(np.float32)
         donors[name] = candidates
     return result, names, {'strategy': 'interpolate', 'bad_channels': bad, 'donors': donors,
@@ -396,6 +438,15 @@ class RecordingRepository:
             raise ValueError('没有找到该被试的原始 EEG 文件；可上传 EDF 后在对话中提问')
         return recording_id
 
+    def current_evidence(self, recording_id):
+        """Return the latest locally repaired evidence for this session."""
+        self.validate(recording_id)
+        with self.lock:
+            cached = self.cache.get(recording_id)
+            if cached is not None:
+                return copy.deepcopy(cached['evidence'])
+        return self.analyze(recording_id)
+
     def resolve(self, text):
         candidates = set()
         for item in self.catalog():
@@ -482,7 +533,8 @@ class RecordingRepository:
             pre_quality = assess_channel_quality(processed, names)
             requested_bad = list(repair_plan['bad_channels'])
             if repair_plan['auto_detect'] and not requested_bad:
-                requested_bad = list(pre_quality.get('bad_channels', []))
+                requested_bad = list(pre_quality.get('blocking_bad_channels',
+                                                     pre_quality.get('bad_channels', [])))
             repaired, repaired_names, repair_report = apply_channel_repair(
                 processed, names, requested_bad, repair_plan['strategy'], repair_plan['min_neighbors'])
             if repair_report['strategy'] != 'none':
@@ -493,6 +545,10 @@ class RecordingRepository:
                 # preserve compatibility when the pre-repair contract passed.
                 compatible = compatible and names == EEG_CHANNELS
             post_quality = assess_channel_quality(processed, names)
+            # A model readout is not published when the quality gate needs
+            # review. Descriptive tools still receive the repaired signal and
+            # can explain the failing channels.
+            compatible = compatible and post_quality.get('status') == 'pass'
             def windows_between(a, b):
                 result, stamps = [], []
                 total = max(0, int((b - a) // (5 * fs)))
@@ -544,6 +600,11 @@ class RecordingRepository:
                       'incomplete_rest_count': sum(not s['complete'] for s in rest_segments) if marks else None,
                       'warnings': warnings,
                       'model_compatible': compatible,
+                      'model_compatibility_reason':
+                          '输入合同与逐导联质量检查均通过' if compatible else
+                          ('逐导联质量检查未通过，禁止发布 VRMSModel 分类'
+                           if post_quality.get('status') != 'pass' else
+                           '通道、采样率或参考不满足 VRMSModel 输入合同'),
                       'quality_policy': 'VRMS训练输入协议：五秒窗，峰峰值≤2000µV，30通道至少28个非平直；断流后预热五秒'}
             evidence = {'status': 'arrived', 'arrived': {}, 'recording': record,
                         'measurement_context': {'source': 'raw_recording', 'input_policy': 'raw_eeg_only',

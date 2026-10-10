@@ -65,6 +65,28 @@ def _plain(value):
     return value if value is None or isinstance(value, (str, bool, int, float)) else None
 
 
+def _raw_preparation_summary(evidence):
+    """Give a planner safe local quality facts, never waveform or identity."""
+    record = (evidence or {}).get('recording') or {}
+    quality = (record.get('channel_quality') or {}).get('after_repair') or {}
+    return {
+        'sampling_hz': record.get('sampling_hz'),
+        'channel_count': len(record.get('eeg_channels') or []),
+        'channels': list(record.get('eeg_channels') or []),
+        'preprocessing_profile': (record.get('preprocessing') or {}).get('profile'),
+        'accepted_windows': (record.get('overall') or {}).get('accepted_windows'),
+        'total_windows': (record.get('overall') or {}).get('total_windows'),
+        'window_coverage': (record.get('overall') or {}).get('window_coverage'),
+        'quality_status': quality.get('status'),
+        'bad_channels': list(quality.get('bad_channels') or []),
+        'blocking_bad_channels': list(quality.get('blocking_bad_channels') or quality.get('bad_channels') or []),
+        'channel_reasons': [
+            {'name': item.get('name'), 'bad': item.get('bad'), 'reasons': list(item.get('reasons') or [])}
+            for item in quality.get('channels', []) if isinstance(item, dict)
+        ],
+    }
+
+
 
 
 def _tool_facts(tool_results):
@@ -597,11 +619,14 @@ class BrainSession:
         if self.backend == 'api':
             try:
                 plan = self._call(name, {'assigned_task': task_text, 'available_tools': specs,
-                    'evidence_available': raw_recording or bool(getattr(self, 'vrms_path_id', None)) if domain == 'vrms' else evidence.get('status') == 'arrived', 'prior_report': [] if raw_recording else previous},
+                    'evidence_available': raw_recording or bool(getattr(self, 'vrms_path_id', None)) if domain == 'vrms' else evidence.get('status') == 'arrived',
+                    'preparation_summary': _raw_preparation_summary(evidence) if raw_recording else None,
+                    'prior_report': [] if raw_recording else previous},
                     'Plan registered local tools for your assigned specialist task. '
                      'Return {requested_tools:[tool_id or {tool_name:string,tool_args:object}]}. Use only this domain tool list; select at least one. '
                      'For EEGChannelRepair, use tool_args with strategy none, drop or interpolate, bad_channels, auto_detect and min_neighbors. '
-                     'Never invent channel names; use only channels returned by EEGFileLoader or EEGQualityAssessor. '
+                     'Use preparation_summary to decide whether repair is needed. If quality_status is review, use only listed blocking_bad_channels or auto_detect=true; never invent channel names. '
+                     'Interpolation is allowed only when the fixed neighbouring donors are available; drop may make VRMSModel incompatible. '
                      'Include temporal tools when the task asks about change or stability, and spectral tools when it asks about ratios or band powers.')
                 proposed = plan.get('requested_tools')
                 selected = _normalize_tool_requests(proposed, set(ids))
@@ -717,9 +742,18 @@ class BrainSession:
             self.emit('plan', {'agents': [{'id': d, **AGENTS[d], 'task': t} for d, t in tasks.items()],
                                'explanation': explanation, 'generation_status': self.plan_status,
                                'turn_id': turn})
-            with ThreadPoolExecutor(max_workers=len(tasks), thread_name_prefix='domain') as pool:
-                futures = {d: pool.submit(self._specialist, d, t, evidence, turn) for d, t in tasks.items()}
-                reports = [future.result() for future in futures.values()]
+            if self.recording_id:
+                # Raw EEG tools share one local repaired recording. Run these
+                # specialists in a deterministic order so a channel-repair
+                # decision is visible to every later measurement tool.
+                reports = []
+                for domain, task in tasks.items():
+                    latest = self.manager.recordings.current_evidence(self.recording_id)
+                    reports.append(self._specialist(domain, task, latest, turn))
+            else:
+                with ThreadPoolExecutor(max_workers=len(tasks), thread_name_prefix='domain') as pool:
+                    futures = {d: pool.submit(self._specialist, d, t, evidence, turn) for d, t in tasks.items()}
+                    reports = [future.result() for future in futures.values()]
             # The shared board is explicit; Supervisor receives every specialist's final report.
             self.emit('shared_state', {'agent_reports': reports, 'turn_id': turn})
             references = list({r['id']: r for report in reports for r in report['references']}.values())

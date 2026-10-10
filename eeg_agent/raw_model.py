@@ -41,7 +41,8 @@ def assess(repository, recording_id, evidence, provider=None, cloud=False):
         result['reason'] = '原始文件没有任务开始与结束事件，未形成整路径模型输入；指标工具继续分析'
         return result
     if not record['model_compatible']:
-        result['reason'] = '该文件不满足 VRMS 输入合同：需要1024Hz、30个指定EEG通道及M1/M2参考；其他工具继续分析'
+        result['reason'] = record.get('model_compatibility_reason') or (
+            '该文件不满足 VRMSModel 输入合同；其他工具继续分析')
         return result
     fold = int(recording_id[-2:]) if recording_id.startswith('subject-') else 1
     manifest = Path(repository.cfg['model_manifest'])
