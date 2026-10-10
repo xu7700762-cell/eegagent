@@ -4,7 +4,7 @@
 
 VRMSAgent 使用真实 GPT 函数调用给出整路径 High/Low；FatigueAgent 和 EmotionAgent 报告疲劳相关 EEG 指标、工作负荷指标及其变化。
 
-三个领域 Agent 直接注册 **4 个工具**：VRMSAgent 2 个、FatigueAgent 1 个、EmotionAgent 1 个。VRMS 判断内部另有 **8 个 EEG 证据工具**和 **1 个聚合接口**，两层注册接口合计 **13 个**；完整名称、作用和层级关系见[EEG 工具清单](docs/EEG_TOOLS.md)。
+三个领域 Agent 直接注册 **4 个工具**：VRMSAgent 2 个、FatigueAgent 1 个、EmotionAgent 1 个；三者共享 **4 个基础 EEG tools**，负责加载、预处理、质量评估和坏导联处理。VRMS 判断内部另有 **8 个 EEG 证据工具**和 **1 个聚合接口**，按唯一接口名称合计 **17 个**；完整名称、作用和层级关系见[EEG 工具清单](docs/EEG_TOOLS.md)。
 
 ## 当前结果：seed2026
 

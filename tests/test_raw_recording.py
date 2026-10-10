@@ -226,7 +226,9 @@ def test_chat_resolves_recording_without_selection_and_restores(raw_cfg, monkeyp
     while session.snapshot()['state'] == 'running' and time.monotonic() < deadline: time.sleep(.01)
     assert session.state == 'idle' and session.result['workflow_status'] == 'cloud_verified'
     assert session.result['measurement_context']['input_policy'] == 'raw_eeg_only'
-    assert {r['tool'] for a in session.result['agent_reports'] for r in a['tool_results']} == {'vrms.raw_recording', 'vrms.raw_model', 'fatigue.raw_spectrum', 'emotion.raw_workload'}
+    assert {r['tool'] for a in session.result['agent_reports'] for r in a['tool_results']} == {
+        'EEGFileLoader', 'EEGPreprocessor', 'EEGQualityAssessor', 'EEGChannelRepair',
+        'vrms.raw_recording', 'vrms.raw_model', 'fatigue.raw_spectrum', 'emotion.raw_workload'}
     assert len(captured) == 1 and captured[0][0] == 'subject-10'
     assert session.domains == ['vrms', 'fatigue', 'emotion']
     assert any(e['kind'] == 'domains_selected' and e['payload']['added_domains'] == ['vrms'] for e in session.events)

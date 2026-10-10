@@ -24,6 +24,173 @@ GROUPS = {'frontal': ('F3', 'Fz', 'F4'), 'parietal': ('P3', 'Pz', 'P4')}
 AMBIGUOUS = re.compile(r'可能|或许|大概|似乎|貌似|不排除|倾向于|一定程度|证据不足|有待进一步')
 PROFILE = 'raw-vrms-causal-v1'
 
+# The repository does not ship electrode coordinates.  This deterministic
+# adjacency map is therefore deliberately conservative: interpolation only
+# uses named neighbouring electrodes from the 10-20 layout and never invents
+# a spatial position from the current signal.
+CHANNEL_NEIGHBORS = {
+    'Fp1': ('Fp2', 'F7', 'F3'), 'Fp2': ('Fp1', 'F4', 'F8'),
+    'F11': ('F7', 'F3', 'FT11'), 'F12': ('F8', 'F4', 'FT12'),
+    'F7': ('Fp1', 'F11', 'F3', 'FT11'), 'F8': ('Fp2', 'F12', 'F4', 'FT12'),
+    'F3': ('Fp1', 'F7', 'Fz', 'F4', 'FC3'), 'Fz': ('F3', 'F4', 'FCz'),
+    'F4': ('Fp2', 'F8', 'Fz', 'F3', 'FC4'), 'FT11': ('F11', 'F7', 'T7', 'FC3'),
+    'FT12': ('F12', 'F8', 'T8', 'FC4'), 'FC3': ('F3', 'FCz', 'C3', 'FT11'),
+    'FCz': ('Fz', 'FC3', 'FC4', 'Cz'), 'FC4': ('F4', 'FCz', 'C4', 'FT12'),
+    'T7': ('FT11', 'C3', 'P7'), 'T8': ('FT12', 'C4', 'P8'),
+    'C3': ('FC3', 'Cz', 'CP3', 'T7'), 'Cz': ('FCz', 'C3', 'C4', 'CPz'),
+    'C4': ('FC4', 'Cz', 'CP4', 'T8'), 'CP3': ('C3', 'CPz', 'P3', 'P7'),
+    'CPz': ('Cz', 'CP3', 'CP4', 'Pz'), 'CP4': ('C4', 'CPz', 'P4', 'P8'),
+    'P7': ('T7', 'CP3', 'P3', 'O1'), 'P8': ('T8', 'CP4', 'P4', 'O2'),
+    'P3': ('CP3', 'Pz', 'P7', 'O1'), 'Pz': ('CPz', 'P3', 'P4', 'Oz'),
+    'P4': ('CP4', 'Pz', 'P8', 'O2'), 'O1': ('P7', 'P3', 'Oz'),
+    'Oz': ('O1', 'O2', 'Pz'), 'O2': ('P8', 'P4', 'Oz'),
+}
+
+
+def normalize_repair_plan(plan):
+    """Validate a local channel-repair request without accepting file paths."""
+    plan = {} if plan is None else dict(plan)
+    strategy = str(plan.get('strategy', 'none')).lower()
+    if strategy not in ('none', 'drop', 'interpolate'):
+        raise ValueError('channel repair strategy must be none, drop or interpolate')
+    bad = plan.get('bad_channels', [])
+    if not isinstance(bad, (list, tuple)) or any(not isinstance(x, str) or not x.strip() for x in bad):
+        raise ValueError('bad_channels must be a list of channel names')
+    bad = list(dict.fromkeys(x.strip() for x in bad))
+    return {'strategy': strategy, 'bad_channels': bad,
+            'auto_detect': bool(plan.get('auto_detect', False)),
+            'min_neighbors': max(1, int(plan.get('min_neighbors', 2)))}
+
+
+def _robust_z(values):
+    values = np.asarray(values, float)
+    center = float(np.nanmedian(values))
+    mad = float(np.nanmedian(np.abs(values - center)))
+    scale = max(1.4826 * mad, 1e-12)
+    return (values - center) / scale
+
+
+def assess_channel_quality(processed, names, *, z_threshold=3.0,
+                           corr_threshold=.4, amplitude_threshold=2000.0,
+                           flat_threshold=.05):
+    """Return transparent channel metrics and conservative bad-channel flags."""
+    x = np.asarray(processed, float)
+    if x.ndim != 2 or x.shape[0] != len(names):
+        raise ValueError('processed EEG must have shape channels by samples')
+    finite = np.isfinite(x).all(axis=0)
+    if not finite.any():
+        return {'status': 'unavailable', 'score': 0., 'bad_channels': list(names),
+                'channels': [{'name': name, 'finite_fraction': 0., 'bad': True,
+                              'reasons': ['no_finite_samples']} for name in names]}
+    values = x[:, finite]
+    finite_fraction = np.mean(np.isfinite(x), axis=1)
+    ptp = np.ptp(np.nan_to_num(values, nan=0.), axis=1)
+    std = np.std(np.nan_to_num(values, nan=0.), axis=1)
+    log_std_z = _robust_z(np.log(np.maximum(std, 1e-12)))
+    reference = np.nanmedian(values, axis=0)
+    reference_centered = reference - np.mean(reference)
+    ref_norm = float(np.linalg.norm(reference_centered))
+    correlations = []
+    for row in values:
+        centered = row - np.mean(row)
+        denom = float(np.linalg.norm(centered) * ref_norm)
+        correlations.append(None if denom <= 1e-12 else float(np.dot(centered, reference_centered) / denom))
+    channels = []
+    bad = []
+    for i, name in enumerate(names):
+        reasons = []
+        if finite_fraction[i] < .99:
+            reasons.append('missing_or_nonfinite_samples')
+        if ptp[i] > amplitude_threshold:
+            reasons.append('peak_to_peak_above_threshold')
+        if std[i] < flat_threshold:
+            reasons.append('flat_channel')
+        if abs(log_std_z[i]) > z_threshold:
+            reasons.append('robust_amplitude_outlier')
+        if correlations[i] is not None and correlations[i] < corr_threshold:
+            reasons.append('low_median_reference_correlation')
+        is_bad = bool(reasons)
+        if is_bad:
+            bad.append(name)
+        channels.append({'name': name, 'finite_fraction': round(float(finite_fraction[i]), 6),
+                         'peak_to_peak_uv': round(float(ptp[i]), 6),
+                         'std_uv': round(float(std[i]), 6),
+                         'median_reference_correlation': None if correlations[i] is None else round(correlations[i], 6),
+                         'robust_amplitude_z': round(float(log_std_z[i]), 6),
+                         'bad': is_bad, 'reasons': reasons})
+    return {'status': 'pass' if not bad else 'review',
+            'score': round(100. * (len(names) - len(bad)) / max(1, len(names)), 4),
+            'bad_channels': bad, 'channels': channels,
+            'thresholds': {'z_threshold': float(z_threshold), 'corr_threshold': float(corr_threshold),
+                           'amplitude_threshold_uv': float(amplitude_threshold),
+                           'flat_threshold_uv': float(flat_threshold)}}
+
+
+def reclassify_channel_quality(report, *, z_threshold=3.0, corr_threshold=.4,
+                               amplitude_threshold=2000.0, flat_threshold=.05):
+    """Reapply thresholds to cached metrics without rereading raw EEG."""
+    if report.get('status') == 'unavailable':
+        return copy.deepcopy(report)
+    channels = []
+    bad = []
+    for old in report.get('channels', []):
+        reasons = []
+        if old['finite_fraction'] < .99:
+            reasons.append('missing_or_nonfinite_samples')
+        if old['peak_to_peak_uv'] > amplitude_threshold:
+            reasons.append('peak_to_peak_above_threshold')
+        if old['std_uv'] < flat_threshold:
+            reasons.append('flat_channel')
+        if abs(old['robust_amplitude_z']) > z_threshold:
+            reasons.append('robust_amplitude_outlier')
+        corr = old.get('median_reference_correlation')
+        if corr is not None and corr < corr_threshold:
+            reasons.append('low_median_reference_correlation')
+        item = {**old, 'bad': bool(reasons), 'reasons': reasons}
+        channels.append(item)
+        if reasons:
+            bad.append(item['name'])
+    return {'status': 'pass' if not bad else 'review',
+            'score': round(100. * (len(channels) - len(bad)) / max(1, len(channels)), 4),
+            'bad_channels': bad, 'channels': channels,
+            'thresholds': {'z_threshold': float(z_threshold), 'corr_threshold': float(corr_threshold),
+                           'amplitude_threshold_uv': float(amplitude_threshold),
+                           'flat_threshold_uv': float(flat_threshold)}}
+
+
+def apply_channel_repair(processed, names, bad_channels, strategy='none', min_neighbors=2):
+    """Drop or interpolate explicitly identified channels in local processed EEG."""
+    strategy = str(strategy).lower()
+    names = list(names)
+    bad = list(dict.fromkeys(bad_channels))
+    unknown = sorted(set(bad) - set(names))
+    if unknown:
+        raise ValueError('Unknown bad EEG channels: ' + ', '.join(unknown))
+    if strategy == 'none' or not bad:
+        return np.asarray(processed, dtype=np.float32), names, {'strategy': 'none', 'bad_channels': [], 'donors': {}}
+    if strategy == 'drop':
+        keep = [i for i, name in enumerate(names) if name not in set(bad)]
+        return np.asarray(processed, dtype=np.float32)[keep], [names[i] for i in keep], {
+            'strategy': 'drop', 'bad_channels': bad, 'donors': {}, 'remaining_channels': [names[i] for i in keep]}
+    if strategy != 'interpolate':
+        raise ValueError('channel repair strategy must be none, drop or interpolate')
+    result = np.asarray(processed, dtype=np.float32).copy()
+    bad_set = set(bad)
+    index = {name: i for i, name in enumerate(names)}
+    donors = {}
+    for name in bad:
+        candidates = [x for x in CHANNEL_NEIGHBORS.get(name, ()) if x in index and x not in bad_set]
+        if len(candidates) < min_neighbors:
+            raise ValueError('Not enough named neighbouring donor channels for interpolation: ' + name)
+        donor_indices = [index[x] for x in candidates]
+        donor_values = result[donor_indices]
+        with np.errstate(invalid='ignore'):
+            replacement = np.nanmean(donor_values, axis=0)
+        result[index[name]] = replacement.astype(np.float32)
+        donors[name] = candidates
+    return result, names, {'strategy': 'interpolate', 'bad_channels': bad, 'donors': donors,
+                           'remaining_channels': names}
+
 
 def clock(seconds):
     millis = round(seconds * 1000)
@@ -277,8 +444,9 @@ class RecordingRepository:
         (directory / 'registration.json').write_text(json.dumps(item, ensure_ascii=False), encoding='utf-8')
         return item
 
-    def analyze(self, recording_id):
+    def analyze(self, recording_id, repair_plan=None):
         self.validate(recording_id)
+        repair_plan = normalize_repair_plan(repair_plan)
         with self.lock:
             if recording_id.startswith('subject-'):
                 path = self.data_root / f'data/raw/Acquisition {int(recording_id[-2:]):02d}.cdt'
@@ -299,7 +467,8 @@ class RecordingRepository:
                     source.close()
                 marks = trigger_events(raw / 1e6, channels.index('Trigger')) if 'Trigger' in channels else []
                 event_source = 'embedded_trigger_waveform' if marks else 'no_task_events'
-            if recording_id in self.cache and self.cache[recording_id]['signature'] == signature:
+            if (recording_id in self.cache and self.cache[recording_id]['signature'] == signature and
+                    self.cache[recording_id].get('repair_plan') == repair_plan):
                 return copy.deepcopy(self.cache[recording_id]['evidence'])
             segments, rest_segments, warnings = state_segments_from_events(marks, len(raw), fs)
             task_count = len(segments) if marks else None
@@ -310,6 +479,20 @@ class RecordingRepository:
             total_samples = len(raw)
             processed, names, compatible = preprocess(raw, channels, fs)
             del raw
+            pre_quality = assess_channel_quality(processed, names)
+            requested_bad = list(repair_plan['bad_channels'])
+            if repair_plan['auto_detect'] and not requested_bad:
+                requested_bad = list(pre_quality.get('bad_channels', []))
+            repaired, repaired_names, repair_report = apply_channel_repair(
+                processed, names, requested_bad, repair_plan['strategy'], repair_plan['min_neighbors'])
+            if repair_report['strategy'] != 'none':
+                processed, names = repaired, repaired_names
+                # ``preprocess`` already checked the sampling rate and M1/M2
+                # reference.  A drop changes the channel contract; an
+                # interpolation keeps the original names and can therefore
+                # preserve compatibility when the pre-repair contract passed.
+                compatible = compatible and names == EEG_CHANNELS
+            post_quality = assess_channel_quality(processed, names)
             def windows_between(a, b):
                 result, stamps = [], []
                 total = max(0, int((b - a) // (5 * fs)))
@@ -346,6 +529,15 @@ class RecordingRepository:
                       'incomplete_task_count': sum(not s['complete'] for s in segments) if marks else None,
                       'duration_seconds': total_samples / fs, 'sampling_hz': fs,
                       'eeg_channels': names, 'signal_sha256': signature[0], 'baseline': baseline,
+                      'preprocessing': {'profile': PROFILE, 'source_sampling_hz': fs,
+                                        'output_sampling_hz': 256, 'reference': 'M1/M2 when both present',
+                                        'notch_hz': 50 if fs > 110 else None,
+                                        'bandpass_hz': [.5, min(45, fs * .4)],
+                                        'lowpass_hz': 70 if fs > 160 else None,
+                                        'warmup_seconds_after_start_or_gap': 5,
+                                        'window_seconds': 5},
+                      'channel_quality': {'before_repair': pre_quality, 'after_repair': post_quality},
+                      'channel_repair': repair_report,
                       'segments': analyzed_segments, 'overall': overall,
                       'rest_segments': analyzed_rests, 'rest_overall': rest_overall,
                       'complete_rest_count': sum(s['complete'] for s in rest_segments) if marks else None,
@@ -358,7 +550,8 @@ class RecordingRepository:
                             'signal_sha256': signature[0], 'preprocessing_profile': PROFILE,
                             'comparison_policy': 'event_segments_only', 'baseline_policy': 'disabled',
                             'aggregation': 'fresh raw waveform; task 20→22 and rest 22→20 grouped separately; complete segments only; no questionnaire or target labels'}}
-            self.cache[recording_id] = {'signature': signature, 'evidence': evidence, 'model_windows': model_windows,
+            self.cache[recording_id] = {'signature': signature, 'repair_plan': repair_plan,
+                                       'evidence': evidence, 'model_windows': model_windows,
                                        'model_baseline': None}
             return copy.deepcopy(evidence)
 
@@ -467,8 +660,76 @@ def direct_summary(domain, results):
     """An honest deterministic summary, also used when cloud generation fails."""
     parts = []
     for item in results:
-        value, tool = item['result'], item['tool']
-        measured = value.get('measurements', {})
+        # Shared preparation tools deliberately return different, local-only
+        # schemas (for example ``channels`` or ``quality`` rather than
+        # ``measurements``).  Keep their summaries useful while ensuring the
+        # domain-specific branches below never assume every tool has a
+        # measurement payload.
+        value = item.get('result') or {}
+        tool = item.get('tool', '')
+        measured = value.get('measurements') or {}
+        if tool == 'EEGFileLoader':
+            if value.get('available') is False:
+                parts.append(value.get('reason', 'EEG 文件加载未完成') + '。')
+            else:
+                channels = value.get('channel_count')
+                sampling = value.get('sampling_hz')
+                duration = value.get('duration_seconds')
+                details = []
+                if channels is not None:
+                    details.append(f'{channels} 个通道')
+                if sampling is not None:
+                    details.append(f'{sampling:g} Hz 采样率' if isinstance(sampling, float) else f'{sampling} Hz 采样率')
+                if duration is not None:
+                    details.append(f'{duration:.2f} 秒记录' if isinstance(duration, (int, float)) else f'{duration} 秒记录')
+                parts.append('EEG 文件已在本地受限目录加载' + ('，' + '、'.join(details) if details else '') + '。')
+            continue
+        if tool == 'EEGPreprocessor':
+            if value.get('available') is False:
+                parts.append(value.get('reason', 'EEG 预处理未完成') + '。')
+            else:
+                profile = (value.get('preprocessing') or {}).get('profile', '冻结预处理合同')
+                accepted, total, coverage = (value.get('accepted_windows'), value.get('total_windows'),
+                                             value.get('window_coverage'))
+                window_text = ''
+                if accepted is not None and total is not None:
+                    window_text = f'，得到 {accepted}/{total} 个合格五秒窗口'
+                    if _finite_measurement(coverage):
+                        window_text += f'（覆盖率 {coverage:.4f}）'
+                parts.append(f'已按 {profile} 执行本地预处理{window_text}。')
+            continue
+        if tool == 'EEGQualityAssessor':
+            if value.get('available') is False:
+                parts.append(value.get('reason', 'EEG 质量检查未完成') + '。')
+            else:
+                quality = value.get('quality') or {}
+                bad = quality.get('bad_channels') or []
+                accepted, total, coverage = (value.get('accepted_windows'), value.get('total_windows'),
+                                             value.get('window_coverage'))
+                status = '发现待复核坏导联：' + '、'.join(bad) if bad else '未发现需要处理的坏导联'
+                window_text = ''
+                if accepted is not None and total is not None:
+                    window_text = f'；合格窗口 {accepted}/{total}'
+                    if _finite_measurement(coverage):
+                        window_text += f'，覆盖率 {coverage:.4f}'
+                parts.append(f'逐导联质量检查{status}{window_text}。')
+            continue
+        if tool == 'EEGChannelRepair':
+            if value.get('available') is False:
+                parts.append(value.get('reason', '坏导联处理未完成') + '。')
+            elif value.get('applied'):
+                repair = value.get('repair') or {}
+                strategy = repair.get('strategy', '已请求处理')
+                bad = repair.get('bad_channels') or []
+                donors = repair.get('donors') or {}
+                donor_text = ''
+                if donors:
+                    donor_text = '；插值供体：' + '，'.join(f'{channel}←{", ".join(names)}'
+                                                       for channel, names in donors.items())
+                parts.append(f'已执行坏导联处理（{strategy}）：' + ('、'.join(bad) if bad else '按质量结果') + donor_text + '。')
+            else:
+                parts.append(value.get('reason', '未执行坏导联删除或插值') + '。')
+            continue
         if tool == 'vrms.raw_recording':
             if measured.get('task_count') is not None:
                 parts.append(f"原始事件记录包含 {measured['task_count']} 个任务片段，{measured['complete_task_count']} 个完整，{measured['incomplete_task_count']} 个缺少结束标记。")

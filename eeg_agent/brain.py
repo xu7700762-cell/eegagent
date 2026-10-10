@@ -274,6 +274,29 @@ def _excerpt(text, limit):
     return text[:end + 1] if end >= 0 else text[:limit] + '…'
 
 
+def _normalize_tool_requests(proposed, allowed):
+    """Accept legacy string tool IDs and the newer ID-plus-arguments form."""
+    if not isinstance(proposed, list) or not proposed:
+        raise ValueError('invalid tool plan')
+    result = []
+    seen = set()
+    for item in proposed:
+        if isinstance(item, str):
+            tool_id, args = item, {}
+        elif isinstance(item, dict):
+            tool_id = item.get('tool_name', item.get('tool'))
+            args = item.get('tool_args', item.get('args', {}))
+            if not isinstance(args, dict):
+                raise ValueError('tool_args must be an object')
+        else:
+            raise ValueError('invalid tool request')
+        if tool_id not in allowed or tool_id in seen:
+            raise ValueError('invalid or duplicate tool request')
+        seen.add(tool_id)
+        result.append((tool_id, args))
+    return result
+
+
 
 
 class BrainSession:
@@ -281,6 +304,7 @@ class BrainSession:
         self.manager = manager
         self.cfg = manager.cfg
         self.lock = threading.RLock()
+        self.data_tool_lock = threading.RLock()
         saved = saved or {}
         self.id = saved.get('id', uuid.uuid4().hex[:12])
         self.backend = saved.get('backend', request['backend'])
@@ -562,7 +586,7 @@ class BrainSession:
         if raw_recording:
             specs = [s for s in specs if s.get('input_scope') == 'raw_eeg_only']
         ids = [s['id'] for s in specs]
-        selected = list(ids)
+        selected = [(tool_id, {}) for tool_id in ids]
         fallback = None
         errors = []
         planning_status = 'mock' if self.backend == 'mock' else 'cloud_verified'
@@ -575,13 +599,16 @@ class BrainSession:
                 plan = self._call(name, {'assigned_task': task_text, 'available_tools': specs,
                     'evidence_available': raw_recording or bool(getattr(self, 'vrms_path_id', None)) if domain == 'vrms' else evidence.get('status') == 'arrived', 'prior_report': [] if raw_recording else previous},
                     'Plan registered local tools for your assigned specialist task. '
-                    'Return {requested_tools:[tool_id]}. Use only this domain tool list; select at least one. '
-                    'Include temporal tools when the task asks about change or stability, and spectral tools when it asks about ratios or band powers.')
+                     'Return {requested_tools:[tool_id or {tool_name:string,tool_args:object}]}. Use only this domain tool list; select at least one. '
+                     'For EEGChannelRepair, use tool_args with strategy none, drop or interpolate, bad_channels, auto_detect and min_neighbors. '
+                     'Never invent channel names; use only channels returned by EEGFileLoader or EEGQualityAssessor. '
+                     'Include temporal tools when the task asks about change or stability, and spectral tools when it asks about ratios or band powers.')
                 proposed = plan.get('requested_tools')
-                if (not isinstance(proposed, list) or not proposed or len(proposed) > len(ids) or
-                        any(t not in ids for t in proposed) or len(set(proposed)) != len(proposed)):
-                    raise ValueError('invalid tool plan')
-                selected = ids if raw_recording else proposed
+                selected = _normalize_tool_requests(proposed, set(ids))
+                if raw_recording:
+                    required = ('EEGFileLoader', 'EEGPreprocessor', 'EEGQualityAssessor')
+                    selected_ids = {tool_id for tool_id, _ in selected}
+                    selected = [(tool_id, {}) for tool_id in required if tool_id in ids and tool_id not in selected_ids] + selected
             except Exception as exc:
                 fallback = '云端工具计划不可用，执行本领域已登记的工具。'
                 planning_status = 'fallback'
@@ -589,18 +616,30 @@ class BrainSession:
                 errors.append(error)
                 self.emit('generation_error', {'role': name, 'agent': domain, **error, 'turn_id': turn})
         results = []
-        for tool_id in selected:
+        for tool_id, tool_args in selected:
             if tool_id == 'vrms.raw_model':
                 result = _plain(public_raw_model(assess_raw_model(self.manager.recordings, self.recording_id, evidence,
                     provider=self.provider, cloud=self.backend == 'api')))
                 results.append({'tool': tool_id, 'result': result})
                 self.emit('tool_result', {'agent': domain, 'tool': tool_id, 'result': result, 'turn_id': turn})
                 continue
-            result = _plain(execute_tool(tool_id, evidence))
+            if tool_id == 'EEGChannelRepair':
+                with self.data_tool_lock:
+                    result = _plain(execute_tool(tool_id, evidence, repository=self.manager.recordings,
+                                                 recording_id=self.recording_id, args=tool_args))
+            else:
+                result = _plain(execute_tool(tool_id, evidence, repository=self.manager.recordings,
+                                             recording_id=self.recording_id, args=tool_args))
             results.append({'tool': tool_id, 'result': result})
             self.emit('tool_result', {'agent': domain, 'tool': tool_id, 'result': result, 'turn_id': turn})
+            if tool_id == 'EEGChannelRepair' and result.get('applied'):
+                # Re-read the local evidence with the same repair plan.  A
+                # plan-less analyze call would intentionally restore the
+                # unmodified cache and silently discard the requested repair
+                # before the domain measurement tools run.
+                evidence = self.manager.recordings.analyze(self.recording_id, repair_plan=tool_args)
         # Retrieval is based on completed tools, restricted to shared + this domain.
-        query = (task_text + ' ' + AGENTS[domain]['label'] + ' ' + ' '.join(selected) +
+        query = (task_text + ' ' + AGENTS[domain]['label'] + ' ' + ' '.join(tool_id for tool_id, _ in selected) +
                  ' ' + ' '.join(str(item['result'].get('reason', '')) for item in results))[:2000]
         retrieved = self.manager.knowledge.search(query, domains=[domain], limit=5,
             **({'method_only': True} if raw_recording else {}))
