@@ -120,6 +120,24 @@
     "scripts/evaluate_raw_gpt_all.py": "286649e10a66377f3ee938806d2fb7aa65b38c13197c3fc42edd45da14ef4b53",
     "scripts/export_model_assets.py": "ec03fb26df745e2a9d3121da97c01c3dd838b4aa90d887e11eaca336639b49af",
     "scripts/recover_raw_gpt_failures.py": "5c0a024788a8a4d0e520d96416095c458c2815ff9345564236452a51de462147",
-    "scripts/verify_release.py": "b7a869a5088bf01805f12f907bd88ca9c47ae28e27f408848a6d63bc7f016819"
+    "scripts/verify_release.py": "d23cdf7b32a24d1d39b60cc1f5a238c5c13a6ba3cb65a66974ef391e18c7f1af",
+    "eeg_agent/decisive_rag.py": "734ff55929f63404274e4d9076acdc14c0824c4c01d9d0c01eb7b0191e0cee74",
+    "eeg_agent/rag_experiment.py": "a5b3d849420f15d2bdeb823a729850dd4231158c2857da1e08cd38d6e9c8c490",
+    "scripts/verify_optimized_rag.py": "1eb3d7103ad587cfa87f55f9498855f2b4fb7ce6b6c2eb8cadfc9560142f1d8a",
+    "tests/test_optimized_rag.py": "61e52f25484e3229458022b185db6f8f4548b46126b9dc613d8405b570b2729c"
+  },
+  "optimized_rag_export": {
+    "experiment_date": "2026-10-11",
+    "independent_of_existing_web_evaluation": true,
+    "historical_classifications_rerun": false,
+    "all146_transformed_contexts_exactly_reproduced": true,
+    "manifest": "results/optimized_rag_manifest.json",
+    "source_audit": "results/optimized_rag_source_audit.json",
+    "public_changes": [
+      "portable numerical replay without private module imports",
+      "public tool names and ordered anonymous subject IDs",
+      "separate citation metadata warnings from classification validity",
+      "explicit rejection of incomplete or refused model responses"
+    ]
   }
 }

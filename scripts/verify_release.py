@@ -62,8 +62,11 @@ def verify():
     provenance=json.loads((ROOT/'source_provenance.json').read_text(encoding='utf-8'))
     for name,expected in provenance['published_code_sha256'].items():
         assert hashlib.sha256((ROOT/name).read_bytes()).hexdigest()==expected,f'Public code hash: {name}'
+    from scripts.verify_optimized_rag import verify_results
+    rag = verify_results()
     print(json.dumps({'status':'passed','public_files':len(files),'gpt_correct':108,'vrmsmodel_correct':94,
-        'scoreable_paths':146,'archived_seeds':3}))
+        'scoreable_paths':146,'archived_seeds':3,'optimized_rag_correct':rag['metrics']['percentile_group']['correct'],
+        'matched_without_rag_correct':rag['metrics']['without_rag']['correct'],'rag_contexts_verified':rag['contexts_verified']}))
 
 
 if __name__=='__main__':verify()
