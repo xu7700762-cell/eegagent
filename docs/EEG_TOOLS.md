@@ -1,6 +1,19 @@
 # 当前 EEG 工具清单
 
-本清单对应当前 `eeg_agent` / `vrms_model` 版本。VRMS 判断使用 **8 个 EEG 证据工具**；加上 `corrective_evidence` 聚合接口，GPT 可调用的函数共 **9 个**。
+本清单对应当前 `eeg_agent` / `vrms_model` 版本，包含三个领域 Agent 的工具。按已注册的不同接口名称统计，共 **13 个**：4 个领域入口，加上 VRMS 判断内部的 8 个证据工具与 1 个聚合接口。领域入口与内部工具存在包含关系，不能解释为 13 路独立 EEG 证据。
+
+三个领域 Agent 直接使用的工具共 **4 个**：
+
+| Agent | 工具名 | 作用 |
+| --- | --- | --- |
+| VRMSAgent | `vrms.raw_recording` | 原始事件、完整与未完成路径、休息段和时间区间统计。 |
+| VRMSAgent | `vrms.raw_model` | 重新编码原始 EEG，运行 MIL、8 个证据工具与 GPT 路径判断。 |
+| FatigueAgent | `fatigue.raw_spectrum` | 计算全头皮 θ/α（TAR），分别汇总路径与休息段指标，并返回逐段值、首末变化及最高片段和时间。 |
+| EmotionAgent | `emotion.raw_workload` | 计算额区 θ/顶区 α 工作负荷指标及额区 alpha 不对称性（FAA），分别返回路径与休息段汇总、逐段工作负荷值、首末变化及最高片段和时间。 |
+
+FatigueAgent 与 EmotionAgent 各有 **1 个已注册 EEG 测量工具**。同一工具返回多个指标和时段比较，不能按输出字段再增加工具数。定义见 [domain_tools.py](../eeg_agent/domain_tools.py)，实际计算见 [recordings.py](../eeg_agent/recordings.py)。
+
+`vrms.raw_model` 内部的 GPT 判断可调用以下 **8 个 EEG 证据工具**：
 
 | 工具名 | 作用 |
 | --- | --- |
@@ -19,13 +32,4 @@
 
 MIL 是单独的路径基线，最终 High/Low 由 LLM 返回。优化 RAG 的案例选择见 [decisive_rag.py](../eeg_agent/decisive_rag.py)，不另算一个 EEG 分类工具。
 
-网页 Supervisor 另外调度 4 个领域入口，它们与上述 9 个 GPT 函数处于不同调用层级：
-
-| 领域入口 | 作用 |
-| --- | --- |
-| `vrms.raw_recording` | 原始事件、完整路径与时间区间统计。 |
-| `vrms.raw_model` | 重新编码原始 EEG，运行 MIL、8 个证据工具与 GPT 路径判断。 |
-| `fatigue.raw_spectrum` | 完整路径与休息段的 θ/α 指标及变化。 |
-| `emotion.raw_workload` | 额区 θ/顶区 α 工作负荷指标及 FAA。 |
-
-领域入口定义见 [domain_tools.py](../eeg_agent/domain_tools.py)。
+因此，VRMS 内部 GPT 函数共 **9 个**，三个领域 Agent 的直接工具共 **4 个**，全项目两层注册接口合计 **13 个**。
